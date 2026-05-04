@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-ssr
+release
+*.local
+.DS_Store
+.qoder
+*.tsbuildinfo

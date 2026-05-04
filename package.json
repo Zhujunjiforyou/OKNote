@@ -1,0 +1,75 @@
+{
+  "name": "oknote",
+  "version": "1.0.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "electron:dev": "cross-env NODE_ENV=development concurrently \"vite --port 5199\" \"wait-on http://localhost:5199 && electron . --dev\"",
+    "electron:preview": "vite build && electron .",
+    "electron:build": "vite build && electron-builder"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-tooltip": "^1.1.6",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "date-fns": "^4.1.0",
+    "electron": "^41.4.0",
+    "electron-builder": "^26.8.1",
+    "framer-motion": "^11.15.0",
+    "lucide-react": "^0.468.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.5",
+    "wait-on": "^8.0.5",
+    "zustand": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.oknote.app",
+    "productName": "OKNote",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "afterPack": "./scripts/afterPack.cjs",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OKNote"
+    }
+  }
+}
