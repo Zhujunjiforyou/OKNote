@@ -68,13 +68,13 @@ export function TodoItem({ item, note }: TodoItemProps) {
             if (e.key === 'Enter') saveEdit()
             if (e.key === 'Escape') setEditing(false)
           }}
-          className="flex-1 bg-white/5 rounded px-1 py-0 text-sm outline-none min-w-0"
+          className="flex-1 bg-white/5 rounded px-1 py-0 text-[0.95em] outline-none min-w-0"
         />
       ) : (
         <span
           onClick={startEdit}
-          className={`text-sm flex-1 leading-relaxed break-all min-w-0 cursor-default transition-colors ${
-            item.isCompleted ? 'line-through text-muted-foreground/50' : 'text-foreground hover:cursor-text'
+          className={`text-[0.95em] flex-1 leading-relaxed break-all min-w-0 cursor-default transition-colors ${
+            item.isCompleted ? 'line-through opacity-45' : 'hover:cursor-text'
           }`}
           style={{
             textDecorationColor: item.isCompleted ? note.color : undefined,

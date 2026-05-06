@@ -6,6 +6,12 @@ export interface Note {
   transparency: number
   fontFamily: string
   fontSize: number
+  noteType: 'independent' | 'echo' | 'view'
+  echoTagId?: string
+  viewTagIds?: string[]
+  isDocked?: boolean
+  dockedOrder?: number
+  isHidden?: boolean
   isPinned: boolean
   isArchived: boolean
   createdAt: string
