@@ -6,7 +6,7 @@
 
 ![OKNote 日历和挂载便签](./assets/image-20260506224159512.png)
 
-![OKNote 桌面便签](./assets/image-20260506224319350.png)
+![](./assets/image-20260506232701041.png)
 
 <img src="./assets/image-20260506224411181.png" alt="OKNote 便签版本记录" style="zoom: 50%;" />
 
