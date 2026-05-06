@@ -11,6 +11,18 @@ const perWindowDefaults: PerWindowSettings = {
   textColor: '#e2e8f0',
 }
 
+/** Merge loaded settings with defaults to ensure all fields exist */
+function mergeWithDefaults(raw: Record<string, unknown> | null | undefined): PerWindowSettings {
+  return {
+    fontFamily: typeof raw?.fontFamily === 'string' ? raw.fontFamily : perWindowDefaults.fontFamily,
+    fontSize: typeof raw?.fontSize === 'number' ? raw.fontSize : perWindowDefaults.fontSize,
+    backgroundColor: typeof raw?.backgroundColor === 'string' ? raw.backgroundColor : perWindowDefaults.backgroundColor,
+    backgroundOpacity: typeof raw?.backgroundOpacity === 'number' ? raw.backgroundOpacity : perWindowDefaults.backgroundOpacity,
+    textColor: typeof raw?.textColor === 'string' ? raw.textColor : perWindowDefaults.textColor,
+    ...(raw?.edgeAutoHide !== undefined ? { edgeAutoHide: !!raw.edgeAutoHide } : {}),
+  }
+}
+
 export function useAppSettings(windowType: WindowType) {
   const [settings, setSettings] = useState<PerWindowSettings>(perWindowDefaults)
   const [themeMode, setThemeMode] = useState<'dark' | 'light'>('dark')
@@ -19,8 +31,8 @@ export function useAppSettings(windowType: WindowType) {
   useEffect(() => {
     if (window.electronAPI?.isElectron) {
       window.electronAPI.getSettings().then((all: AllSettings) => {
-        setThemeMode(all.themeMode)
-        setSettings(all[windowType] || perWindowDefaults)
+        setThemeMode(all.themeMode || 'dark')
+        setSettings(mergeWithDefaults(all[windowType] as unknown as Record<string, unknown> | undefined))
         setLoaded(true)
       }).catch((err: Error) => {
         console.error('useAppSettings: getSettings failed:', err.message)
@@ -28,8 +40,8 @@ export function useAppSettings(windowType: WindowType) {
       })
 
       const cleanup = window.electronAPI.onSettingsChanged((all: AllSettings) => {
-        setThemeMode(all.themeMode)
-        setSettings(all[windowType] || perWindowDefaults)
+        setThemeMode(all.themeMode || 'dark')
+        setSettings(mergeWithDefaults(all[windowType] as unknown as Record<string, unknown> | undefined))
       })
 
       return cleanup

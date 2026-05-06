@@ -78,6 +78,9 @@ html.electron-transparent,
 html.electron-transparent body,
 html.electron-transparent #root {
   background: transparent !important;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 /* Scrollbar styling */
@@ -112,4 +115,483 @@ html.electron-transparent #root {
 /* Selection */
 ::selection {
   @apply bg-primary/30 text-foreground;
+}
+
+/* Edge auto-hide for calendar */
+.calendar-window {
+  position: relative;
+  overflow: hidden;
+}
+
+.calendar-window > *:not(.absolute):not(.fixed) {
+  position: relative;
+}
+
+.calendar-text-readable,
+.calendar-window .cal-main-content {
+  text-shadow: var(--calendar-text-shadow);
+}
+.calendar-collapsed {
+  overflow: hidden !important;
+}
+.calendar-collapsed .cal-main-content,
+.calendar-collapsed .dock-resizer,
+.calendar-collapsed [data-dock-area] {
+  display: none !important;
+}
+.calendar-collapsed .cal-titlebar {
+  min-height: 36px;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+.calendar-collapsed .cal-left-actions,
+.calendar-collapsed .cal-right-actions,
+.calendar-collapsed .cal-chevron-left,
+.calendar-collapsed .cal-chevron-right {
+  display: none !important;
+}
+
+@media (max-width: 560px) {
+  .calendar-window:not(.calendar-collapsed) .cal-left-actions {
+    display: none !important;
+  }
+
+  .calendar-window:not(.calendar-collapsed) .cal-titlebar {
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 420px) {
+  .calendar-window:not(.calendar-collapsed) .cal-view-switch {
+    display: none !important;
+  }
+
+  .calendar-window:not(.calendar-collapsed) .cal-titlebar {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
+.calendar-window:not(.calendar-collapsed) .cal-main-content,
+.calendar-window:not(.calendar-collapsed) [data-dock-area] {
+  transform-origin: top center;
+  animation: calendar-roll-open 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-resizer {
+  background: rgba(255, 255, 255, 0.02);
+  touch-action: none;
+}
+
+.dock-resizer-line {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dock-resizer-grip {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  opacity: 0.55;
+  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.dock-resizer:hover .dock-resizer-grip,
+.resizing-dock .dock-resizer-grip {
+  opacity: 0.95;
+  background: rgba(96, 165, 250, 0.62);
+  transform: translate(-50%, -50%) scaleX(1.25);
+}
+
+.dock-resizer-disabled {
+  pointer-events: none;
+  cursor: default;
+}
+
+.dock-resizer-disabled .dock-resizer-grip {
+  opacity: 0.18;
+  transform: translate(-50%, -50%) scaleX(0.82);
+}
+
+.resizing-dock,
+.resizing-dock * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+@keyframes calendar-roll-open {
+  from {
+    opacity: 0.72;
+    transform: scaleY(0.94);
+    filter: blur(0.5px);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+    filter: blur(0);
+  }
+}
+
+/* Dock carousel 3D perspective */
+.carousel-container {
+  perspective: 800px;
+  overflow: hidden;
+}
+.carousel-item {
+  transform-style: preserve-3d;
+  will-change: transform, opacity;
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease, filter 0.35s ease;
+}
+.carousel-item-active {
+  transform: rotateY(0deg) translateZ(0);
+  opacity: 1;
+  filter: saturate(1);
+  z-index: 3;
+}
+.carousel-item-peek-left {
+  transform: rotateY(30deg) translateZ(-100px);
+  opacity: 0.68;
+  filter: saturate(0.85);
+  z-index: 2;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.carousel-item-peek-right {
+  transform: rotateY(-30deg) translateZ(-100px);
+  opacity: 0.68;
+  filter: saturate(0.85);
+  z-index: 2;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.carousel-item-hidden {
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.carousel-nav {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.dock-board {
+  perspective: 1100px;
+  perspective-origin: 50% 48%;
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease;
+}
+
+.dock-board-item {
+  min-height: 0;
+}
+
+.dock-main-strip {
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-carousel-stage {
+  transform-style: preserve-3d;
+}
+
+.dock-peek {
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.64;
+  filter: saturate(0.82) contrast(0.96);
+  transform-style: preserve-3d;
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease, filter 0.22s ease;
+}
+
+.dock-peek-left {
+  left: 0;
+  transform-origin: right center;
+  transform: translate3d(-78%, -50%, -110px) rotateY(32deg) scale(0.94);
+}
+
+.dock-peek-right {
+  right: 0;
+  transform-origin: left center;
+  transform: translate3d(78%, -50%, -110px) rotateY(-32deg) scale(0.94);
+}
+
+.docked-note-card {
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.10);
+}
+
+.docked-note-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.48;
+  z-index: 0;
+}
+
+.docked-note-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.docked-note-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+.docked-note-card-independent::before {
+  border-top: 7px solid color-mix(in srgb, var(--note-accent) 82%, white 18%);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.18), transparent 28%),
+    repeating-linear-gradient(180deg, transparent 0 27px, rgba(255,255,255,0.10) 27px 28px);
+}
+
+.docked-note-card-independent::after {
+  inset: 9px 10px auto auto;
+  width: 32px;
+  height: 16px;
+  border-radius: 0 0 5px 5px;
+  background: rgba(255, 255, 255, 0.18);
+  transform: rotate(2deg);
+  opacity: 0.62;
+}
+
+.docked-note-card-echo::before {
+  border-left: 10px solid color-mix(in srgb, var(--note-accent) 78%, white 22%);
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.24), transparent 48%),
+    repeating-linear-gradient(90deg, transparent 0 22px, rgba(255,255,255,0.12) 22px 23px),
+    repeating-linear-gradient(180deg, transparent 0 22px, rgba(255,255,255,0.10) 22px 23px);
+}
+
+.docked-note-card-echo::after {
+  inset: auto 14px 52px auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.12) 0 3px, transparent 3px),
+    conic-gradient(from 0deg, transparent 0 25%, rgba(255,255,255,0.16) 25% 34%, transparent 34% 58%, rgba(255,255,255,0.16) 58% 67%, transparent 67%);
+  opacity: 0.52;
+}
+
+.docked-note-card-active {
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.30);
+}
+
+.docked-note-card-inactive {
+  filter: contrast(0.98);
+}
+
+.docked-note-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
+  transform: translateY(-1px);
+}
+
+.docked-note-chip {
+  color: var(--note-text);
+  background: var(--note-panel);
+  border: 1px solid var(--note-panel-border);
+  opacity: 0.76;
+}
+
+.docked-note-kind-badge {
+  color: var(--note-text);
+  border: 1px solid color-mix(in srgb, var(--note-accent) 54%, white 30%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.10) inset;
+  font-weight: 700;
+  opacity: 0.96;
+}
+
+.docked-note-kind-badge-independent {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.10)),
+    color-mix(in srgb, var(--note-accent) 26%, transparent);
+  border-radius: 4px;
+}
+
+.docked-note-kind-badge-echo {
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.16) 0 1px, transparent 1px 5px),
+    color-mix(in srgb, var(--note-accent) 34%, transparent);
+  border-radius: 999px;
+}
+
+.docked-note-input {
+  color: var(--note-text);
+  background: var(--note-panel);
+  border: 1px solid var(--note-panel-border);
+}
+
+.docked-note-input::placeholder {
+  color: var(--note-muted);
+}
+
+.docked-note-card-dragging {
+  opacity: 0.72;
+  transform: translateY(-3px) rotate(1deg) !important;
+}
+
+.dock-drag-preview {
+  overflow: hidden;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+  transform: rotate(1.5deg) scale(0.98);
+  animation: drag-preview-in 0.12s ease both;
+}
+
+.dock-drag-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.02));
+  pointer-events: none;
+}
+
+.dock-drag-preview-outside {
+  box-shadow: 0 18px 48px rgba(239, 68, 68, 0.28);
+}
+
+.dock-empty-state {
+  opacity: 0;
+  animation: note-in 0.28s ease forwards;
+}
+
+.note-window-root {
+  position: relative;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.18s ease, filter 0.18s ease;
+}
+
+.note-window-independent-note {
+  box-shadow: inset 0 5px 0 color-mix(in srgb, var(--note-accent) 76%, white 24%), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.note-window-echo-note {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 8px 0 0 color-mix(in srgb, var(--note-accent) 70%, white 30%), 0 14px 38px rgba(0, 0, 0, 0.18);
+}
+
+.note-window-root::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.note-window-root > * {
+  position: relative;
+  z-index: 1;
+}
+
+.note-window-root > .absolute {
+  position: absolute;
+  z-index: 0;
+}
+
+.note-window-independent-note::before {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10), transparent 26%),
+    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.08) 31px 32px);
+}
+
+.note-window-echo-note::before {
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.20), transparent 48%),
+    repeating-linear-gradient(90deg, transparent 0 26px, rgba(255,255,255,0.10) 26px 27px),
+    repeating-linear-gradient(180deg, transparent 0 26px, rgba(255,255,255,0.08) 26px 27px),
+    radial-gradient(circle at 16% 0%, rgba(255,255,255,0.22), transparent 32%);
+}
+
+.note-type-badge {
+  background: rgba(255, 255, 255, 0.10);
+  color: currentColor;
+  opacity: 0.48;
+}
+
+.note-type-badge-independent {
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--note-accent) 50%, white 28%);
+  background: color-mix(in srgb, var(--note-accent) 24%, transparent);
+  opacity: 0.78;
+}
+
+.note-type-badge-echo {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--note-accent) 58%, white 24%);
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.14) 0 1px, transparent 1px 5px),
+    color-mix(in srgb, var(--note-accent) 30%, transparent);
+  opacity: 0.88;
+}
+
+.note-window-dock-target {
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.42), 0 18px 48px rgba(37, 99, 235, 0.22);
+}
+
+.note-dock-preview-hint {
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.14);
+  color: currentColor;
+}
+
+.echo-event-item:hover {
+  background-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+.day-event-list {
+  scrollbar-width: none;
+}
+
+.day-event-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.animate-note-in {
+  animation: note-in 0.22s ease both;
+}
+
+@keyframes note-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes drag-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) rotate(1.5deg) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(1.5deg) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .calendar-window,
+  .calendar-window .cal-main-content,
+  .calendar-window [data-dock-area],
+  .carousel-item,
+  .dock-main-strip,
+  .dock-board,
+  .docked-note-card,
+  .dock-drag-preview,
+  .animate-note-in,
+  .dock-empty-state {
+    animation: none !important;
+    transition: none !important;
+  }
 }
