@@ -9,9 +9,10 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "electron:dev": "cross-env NODE_ENV=development concurrently \"vite --port 5199\" \"wait-on http://localhost:5199 && electron . --dev\"",
+    "electron:dev": "node scripts/killport.cjs && cross-env NODE_ENV=development VITE_PORT=5199 concurrently --kill-others --kill-others-on-fail \"vite --port 5199 --strictPort\" \"wait-on http://localhost:5199 && electron . --dev\"",
     "electron:preview": "vite build && electron .",
-    "electron:build": "vite build && electron-builder"
+    "electron:build": "vite build && electron-builder",
+    "killport": "node scripts/killport.cjs"
   },
   "dependencies": {},
   "devDependencies": {

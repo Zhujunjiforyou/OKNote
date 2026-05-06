@@ -6,3 +6,5 @@ release
 .DS_Store
 .qoder
 *.tsbuildinfo
+Agent.md
+nul
