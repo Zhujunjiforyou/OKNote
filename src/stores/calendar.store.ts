@@ -90,7 +90,11 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       events: s.events.filter((e) => e.id !== id),
       selectedEventId: s.selectedEventId === id ? null : s.selectedEventId,
     }))
-    debouncedSaveEvents()
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
+    void saveEvents()
   },
 
   loadEvents: (events) => set({ events }),

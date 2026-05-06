@@ -693,9 +693,15 @@ function broadcastSettings(){
 }
 
 // ── Broadcast helpers ──
-function broadcastToEchoNotes(data){
-  const wins=Object.values(winRegistry.notes);
-  wins.forEach(w=>{if(w&&!w.isDestroyed()) w.webContents.send('events-changed',data)});
+function loadEventsSnapshot(){
+  const events=loadAppData('events.json');
+  return Array.isArray(events)?events:[];
+}
+
+function broadcastEventsChanged(data={}){
+  const payload={action:'events-changed',events:loadEventsSnapshot(),...data};
+  const wins=[winRegistry.calendar,...Object.values(winRegistry.notes)];
+  wins.forEach(w=>{if(w&&!w.isDestroyed()) w.webContents.send('events-changed',payload)});
 }
 
 // ── IPC ──
@@ -908,11 +914,7 @@ function setupIPC(){
       if(Array.isArray(events)){
         const updated=events.map(ev=>(ev.tagId===tagId?{...ev,tagId:undefined}:ev));
         saveAppData('events.json',updated);
-        broadcastToEchoNotes({tagId,action:'tag-deleted'});
-        // Also notify calendar window to reload events
-        if(winRegistry.calendar&&!winRegistry.calendar.isDestroyed()){
-          winRegistry.calendar.webContents.send('events-changed',{tagId,action:'tag-deleted'});
-        }
+        broadcastEventsChanged({tagId,action:'tag-deleted'});
       }
       const result=saveAppData('tags.json',tags);
       return result;
@@ -921,7 +923,7 @@ function setupIPC(){
 
   // ── Event sync ──
   ipcMain.on('notify-events-changed',()=>{
-    broadcastToEchoNotes({action:'events-changed'});
+    broadcastEventsChanged({action:'events-changed'});
   });
   ipcMain.handle('create-event-from-echo',(_e,eventData)=>{
     try{
@@ -931,7 +933,7 @@ function setupIPC(){
       if(winRegistry.calendar&&!winRegistry.calendar.isDestroyed()){
         winRegistry.calendar.webContents.send('echo-event-created',eventData);
       }
-      broadcastToEchoNotes({action:'events-changed'});
+      broadcastEventsChanged({action:'events-changed'});
       return eventData;
     }catch(e){console.error('create-event-from-echo failed:',e.message);return null}
   });

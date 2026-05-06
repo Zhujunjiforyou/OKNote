@@ -126,7 +126,11 @@ export function CalendarWindow() {
         calendarCollapsedRef.current = collapsed
         setCalendarCollapsed(collapsed)
       })
-      const unsub3 = window.electronAPI.onEventsChanged(() => {
+      const unsub3 = window.electronAPI.onEventsChanged((data) => {
+        if (Array.isArray(data?.events)) {
+          useCalendarStore.getState().loadEvents(data.events as CalendarEvent[])
+          return
+        }
         // Reload events from disk (e.g. after tag deletion cascades)
         window.electronAPI!.loadAppData('events').then((data) => {
           if (Array.isArray(data)) {
@@ -168,7 +172,8 @@ export function CalendarWindow() {
         const latest = await window.electronAPI!.loadAppData('events')
         if (Array.isArray(latest)) {
           useCalendarStore.getState().loadEvents(latest as CalendarEvent[])
-          const currentEvent = (latest as CalendarEvent[]).find((item) => item.id === event.id) || event
+          const currentEvent = (latest as CalendarEvent[]).find((item) => item.id === event.id)
+          if (!currentEvent) return
           setMultiDayMode(!!(currentEvent.endDate && currentEvent.endDate !== currentEvent.startDate))
           openEventForm(currentEvent)
           return

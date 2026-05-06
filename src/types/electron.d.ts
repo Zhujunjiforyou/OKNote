@@ -58,7 +58,7 @@ export interface ElectronAPI {
 
   // Event sync
   notifyEventsChanged: () => void;
-  onEventsChanged: (callback: (data: { tagId?: string }) => void) => () => void;
+  onEventsChanged: (callback: (data: { action?: string; tagId?: string; events?: unknown[] }) => void) => () => void;
   createEventFromEcho: (eventData: unknown) => Promise<unknown>;
   onEchoEventCreated: (callback: (event: unknown) => void) => () => void;
   getEventsByTag: (tagId: string) => Promise<unknown[]>;

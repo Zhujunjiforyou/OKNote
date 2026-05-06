@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import type { CalendarEvent } from '@/types/calendar.types'
 import type { Note } from '@/types/notes.types'
 import { useTagStore } from '@/stores/tag.store'
+import { useCalendarStore } from '@/stores/calendar.store'
 import { Clock } from 'lucide-react'
 import { hexToLuminance, normalizeHexColor } from '@/lib/utils'
 
@@ -18,6 +19,7 @@ function readableTextOn(hex: string): string {
 
 export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEventListProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([])
+  const calendarEvents = useCalendarStore((s) => s.events)
   const getTagById = useTagStore((s) => s.getTagById)
   const selectedTagIds = Array.isArray(note.viewTagIds) && note.viewTagIds.length > 0
     ? note.viewTagIds
@@ -33,6 +35,14 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
     if (!dateStr) return ''
     const [, month = '', day = ''] = dateStr.split('-')
     return month && day ? `${Number(month)}/${Number(day)}` : dateStr
+  }
+  const applyEventsSnapshot = (snapshot: unknown[]) => {
+    const merged = new Map<string, CalendarEvent>()
+    for (const event of snapshot as CalendarEvent[]) {
+      if (!event?.id || !event.tagId || !selectedTagIds.includes(event.tagId)) continue
+      merged.set(event.id, event)
+    }
+    setEvents([...merged.values()])
   }
 
   const loadEvents = async () => {
@@ -59,10 +69,19 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
     loadEvents()
   }, [selectedTagKey])
 
+  useEffect(() => {
+    if (calendarEvents.length === 0 && events.length === 0) return
+    applyEventsSnapshot(calendarEvents)
+  }, [calendarEvents, selectedTagKey])
+
   // Listen for event changes broadcast
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
-    return window.electronAPI.onEventsChanged(() => {
+    return window.electronAPI.onEventsChanged((data) => {
+      if (Array.isArray(data?.events)) {
+        applyEventsSnapshot(data.events)
+        return
+      }
       loadEvents()
     })
   }, [selectedTagKey])
