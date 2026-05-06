@@ -1,7 +1,8 @@
 import { useCalendarStore } from '@/stores/calendar.store'
+import { useTagStore } from '@/stores/tag.store'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { X, Pencil, Trash2, Clock, MapPin } from 'lucide-react'
+import { X, Pencil, Trash2, Clock, MapPin, Tag } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 export function EventDetailModal() {
@@ -10,8 +11,10 @@ export function EventDetailModal() {
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
+  const getTagById = useTagStore((s) => s.getTagById)
 
   const event = events.find((e) => e.id === selectedEventId)
+  const eventTag = event?.tagId ? getTagById(event.tagId) : null
 
   return (
     <AnimatePresence>
@@ -20,7 +23,7 @@ export function EventDetailModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={() => selectEvent(null)}
         >
           <motion.div
@@ -47,6 +50,14 @@ export function EventDetailModal() {
                 </div>
 
                 <div className="space-y-3 text-sm">
+                  {/* Tag */}
+                  {eventTag && (
+                    <div className="flex items-center gap-2" style={{ color: eventTag.color }}>
+                      <Tag size={14} />
+                      <span className="text-xs font-medium">{eventTag.name}</span>
+                    </div>
+                  )}
+
                   {/* Date/Time */}
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Clock size={14} />

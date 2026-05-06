@@ -14,28 +14,35 @@ import { DayCell } from './DayCell'
 import { getHoliday } from '@/lib/holidays'
 import type { CalendarEvent } from '@/types/calendar.types'
 
-const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
+const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
 interface MonthGridProps {
   compact?: boolean
+  viewMode?: 'month' | 'week'
   cellBorderColor?: string
   holidayStripeColor?: string
   holidayTextColor?: string
+  eventTextColor?: string
   onDayDoubleClick?: () => void
 }
 
-export function MonthGrid({ compact = false, cellBorderColor, holidayStripeColor, holidayTextColor, onDayDoubleClick }: MonthGridProps) {
+export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick }: MonthGridProps) {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
 
   const days = useMemo(() => {
+    if (viewMode === 'week') {
+      const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
+      const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
+      return eachDayOfInterval({ start: weekStart, end: weekEnd })
+    }
     const monthStart = startOfMonth(currentDate)
     const monthEnd = endOfMonth(currentDate)
     const calStart = startOfWeek(monthStart, { weekStartsOn: 1 })
     const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 })
     return eachDayOfInterval({ start: calStart, end: calEnd })
-  }, [currentDate])
+  }, [currentDate, viewMode])
 
   const weeks = useMemo(() => {
     const result: Date[][] = []
@@ -85,18 +92,19 @@ export function MonthGrid({ compact = false, cellBorderColor, holidayStripeColor
     }
     return result
   }, [weeks, events])
+  const weekdayLabels = WEEKDAY_LABELS
 
   return (
     <div className={compact ? 'flex flex-col h-full' : 'flex flex-col h-full p-3'}>
       {/* Day headers */}
       <div className="grid grid-cols-7 shrink-0 mb-0.5">
-        {WEEKDAYS.map((d, i) => (
+        {weekdayLabels.map((d, i) => (
           <div
             key={d}
             className={`text-center text-[0.7em] font-semibold tracking-wide ${
               compact ? 'py-0.5' : 'py-1.5'
             } ${
-              i >= 5 ? 'opacity-40' : 'opacity-60'
+              i >= 5 ? 'opacity-55' : 'opacity-75'
             }`}
           >
             {d}
@@ -146,13 +154,15 @@ export function MonthGrid({ compact = false, cellBorderColor, holidayStripeColor
                 dateStr={dateStr}
                 events={sorted}
                 eventRows={rowMap}
-                isCurrentMonth={isSameMonth(day, currentDate)}
+                isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
                 isToday={isToday(day)}
                 compact={compact}
                 cellBorderColor={cellBorderColor}
                 holiday={getHoliday(dateStr)}
+                showHolidayLabel={viewMode === 'week' && wi === 0 && di === 0}
                 holidayStripeColor={holidayStripeColor}
                 holidayTextColor={holidayTextColor}
+                eventTextColor={eventTextColor}
                 onClick={() => {
                   useCalendarStore.getState().setCurrentDate(day)
                 }}

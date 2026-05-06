@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
+import { useTagStore } from '@/stores/tag.store'
 import { CalendarEvent } from '@/types/calendar.types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { X } from 'lucide-react'
+import { Trash2, X } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { generateId } from '@/lib/utils'
 
@@ -18,6 +19,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
   const editingEvent = useCalendarStore((s) => s.editingEvent)
   const addEvent = useCalendarStore((s) => s.addEvent)
   const updateEvent = useCalendarStore((s) => s.updateEvent)
+  const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const currentDate = useCalendarStore((s) => s.currentDate)
 
   const [title, setTitle] = useState('')
@@ -29,7 +31,11 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
   const [isMultiDay, setIsMultiDay] = useState(initialMultiDay)
   const [color, setColor] = useState('#3B82F6')
   const [description, setDescription] = useState('')
+  const [tagId, setTagId] = useState<string | null>(null)
   const [error, setError] = useState('')
+
+  const tags = useTagStore((s) => s.tags)
+  const getTagById = useTagStore((s) => s.getTagById)
 
   useEffect(() => {
     if (editingEvent) {
@@ -43,6 +49,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
       setIsAllDay(editingEvent.isAllDay)
       setColor(editingEvent.color)
       setDescription(editingEvent.description)
+      setTagId(editingEvent.tagId || null)
     } else {
       const y = currentDate.getFullYear()
       const m = String(currentDate.getMonth() + 1).padStart(2, '0')
@@ -72,6 +79,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
       endTime: isAllDay ? undefined : (endTime || undefined),
       isAllDay,
       color,
+      tagId: tagId || undefined,
       createdAt: editingEvent?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
@@ -89,7 +97,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
@@ -209,6 +217,28 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                 </div>
               </div>
 
+              {/* Tag selector */}
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">分类标签</p>
+                <select
+                  value={tagId || ''}
+                  onChange={(e) => {
+                    const id = e.target.value || null
+                    setTagId(id)
+                    const tag = id ? getTagById(id) : null
+                    if (tag) setColor(tag.color)
+                  }}
+                  className="w-full bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">无标签</option>
+                  {tags.map((tag) => (
+                    <option key={tag.id} value={tag.id}>
+                      {tag.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               {/* Description */}
               <textarea
                 value={description}
@@ -220,7 +250,22 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
             </div>
 
             {/* Actions */}
-            <div className="flex gap-2 mt-5 pt-4 border-t border-border justify-end">
+            <div className="flex gap-2 mt-5 pt-4 border-t border-border">
+              {editingEvent && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => {
+                    deleteEvent(editingEvent.id)
+                    onClose()
+                  }}
+                >
+                  <Trash2 size={13} />
+                  删除
+                </Button>
+              )}
+              <div className="flex-1" />
               <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
               <Button size="sm" onClick={handleSave}>保存</Button>
             </div>

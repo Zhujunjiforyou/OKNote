@@ -1,6 +1,7 @@
 import { useCalendarStore } from '@/stores/calendar.store'
+import { useTagStore } from '@/stores/tag.store'
 import { filterEventsByDate } from '@/lib/utils'
-import { X } from 'lucide-react'
+import { X, Tag } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 interface DayEventsModalProps {
@@ -12,6 +13,8 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
+  const tags = useTagStore((s) => s.tags)
+  const getTagById = useTagStore((s) => s.getTagById)
 
   const y = currentDate.getFullYear()
   const m = String(currentDate.getMonth() + 1).padStart(2, '0')
@@ -19,6 +22,12 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
   const dateStr = `${y}-${m}-${d}`
 
   const dayEvents = filterEventsByDate(events, dateStr)
+  const sortedDayEvents = [...dayEvents].sort((a, b) => {
+    if (a.startTime && !b.startTime) return -1
+    if (!a.startTime && b.startTime) return 1
+    if (a.startTime && b.startTime) return a.startTime.localeCompare(b.startTime)
+    return 0
+  })
 
   return (
     <AnimatePresence>
@@ -54,7 +63,9 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
                   <p className="text-sm text-muted-foreground/50 text-center py-6">暂无事件</p>
                 ) : (
                   <div className="space-y-1.5">
-                    {dayEvents.map((event) => (
+                    {sortedDayEvents.map((event) => {
+                      const evTag = event.tagId ? getTagById(event.tagId) : null
+                      return (
                       <button
                         key={event.id}
                         onClick={() => {
@@ -68,7 +79,14 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
                           style={{ backgroundColor: event.color }}
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{event.title}</div>
+                          <div className="flex items-center gap-1.5">
+                            {evTag && (
+                              <span className="text-[0.65em] font-medium opacity-70" style={{ color: evTag.color }}>
+                                {evTag.name}
+                              </span>
+                            )}
+                            <span className="text-sm font-medium truncate">{event.title}</span>
+                          </div>
                           <div className="text-xs text-muted-foreground/60">
                             {event.isAllDay ? '全天' : `${event.startTime || ''} ${event.endTime ? ' - ' + event.endTime : ''}`}
                             {event.endDate && event.endDate !== event.startDate && (
@@ -77,7 +95,8 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
                           </div>
                         </div>
                       </button>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>

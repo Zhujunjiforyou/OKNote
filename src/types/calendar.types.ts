@@ -8,6 +8,7 @@ export interface CalendarEvent {
   endTime?: string
   isAllDay: boolean
   color: string
+  tagId?: string
   createdAt: string
   updatedAt: string
 }
