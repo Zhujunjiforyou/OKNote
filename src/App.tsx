@@ -16,7 +16,7 @@ export default function App() {
     }
     if (hash === '#/settings') return <SettingsWindow />
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[#0d0d10] select-none">
+      <div className="h-screen w-screen flex items-center justify-center bg-[#08111f] select-none">
         <span className="text-xs text-muted-foreground/30">OKNote</span>
       </div>
     )

@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { X, Sun, Moon, Globe, CalendarDays, StickyNote, ListTodo, Trash2, Eye, EyeOff, Tag } from 'lucide-react'
-import { isLightColor } from '@/lib/utils'
+import { APP_COLOR_PALETTE, isLightColor } from '@/lib/utils'
 import { useTagStore } from '@/stores/tag.store'
 
 type SettingsTab = 'global' | 'calendar' | 'notes' | 'manage' | 'tags'
 
-const DARK_PRESET = { backgroundColor: '#0d0d10', textColor: '#e2e8f0' }
-const LIGHT_PRESET = { backgroundColor: '#ffffff', textColor: '#1a1a2e' }
+const DARK_PRESET = { backgroundColor: '#08111F', textColor: '#EAF2FF' }
+const LIGHT_PRESET = { backgroundColor: '#F7FAFC', textColor: '#132033' }
 
 interface PerWinSettings {
   fontFamily: string; fontSize: number; backgroundColor: string; backgroundOpacity: number; textColor: string; edgeAutoHide?: boolean
@@ -145,8 +145,8 @@ function AppearancePanel({
           <div className="font-medium opacity-80" style={{ fontSize: settings.fontSize + 'px' }}>预览标题</div>
           <div className="opacity-35" style={{ fontSize: (settings.fontSize * 0.9) + 'px' }}>展示当前字体、颜色和字号的真实效果</div>
           <div className="flex gap-1.5 mt-0.5">
-            <span className="px-1.5 py-0.5 rounded text-blue-400/80" style={{ fontSize: (settings.fontSize * 0.8) + 'px', backgroundColor: '#3b82f615' }}>标签A</span>
-            <span className="px-1.5 py-0.5 rounded text-green-400/80" style={{ fontSize: (settings.fontSize * 0.8) + 'px', backgroundColor: '#22c55e15' }}>标签B</span>
+            <span className="px-1.5 py-0.5 rounded text-sky-400/80" style={{ fontSize: (settings.fontSize * 0.8) + 'px', backgroundColor: '#38bdf815' }}>标签A</span>
+            <span className="px-1.5 py-0.5 rounded text-teal-400/80" style={{ fontSize: (settings.fontSize * 0.8) + 'px', backgroundColor: '#2dd4bf15' }}>标签B</span>
           </div>
         </div>
       </div>
@@ -176,7 +176,7 @@ function GlobalFontPanel({
     return systemFonts.filter((f) => f.toLowerCase().includes(q)).slice(0, 100)
   }, [systemFonts, fontSearch])
 
-  const bgColor = isDark ? '#0d0d10' : '#ffffff'
+  const bgColor = isDark ? '#08111F' : '#F7FAFC'
   const borderColor = isDark ? '#ffffff10' : '#00000010'
   const labelO = isDark ? 0.42 : 0.62
   const mutedO = isDark ? 0.62 : 0.76
@@ -236,19 +236,19 @@ export function SettingsWindow() {
   const [themeMode, setThemeMode] = useState<'dark' | 'light'>('dark')
   const [globalFontFamily, setGlobalFontFamily] = useState('Microsoft YaHei')
   const [globalFontSize, setGlobalFontSize] = useState(14)
-  const [calendarSettings, setCalendarSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#0d0d10', backgroundOpacity: 0.88, textColor: '#e2e8f0', edgeAutoHide: true })
-  const [notesSettings, setNotesSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#0d0d10', backgroundOpacity: 0.88, textColor: '#e2e8f0' })
+  const [calendarSettings, setCalendarSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#08111F', backgroundOpacity: 0.88, textColor: '#EAF2FF', edgeAutoHide: true })
+  const [notesSettings, setNotesSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#08111F', backgroundOpacity: 0.88, textColor: '#EAF2FF' })
   const [loaded, setLoaded] = useState(false)
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<SettingsTab>('global')
   const [fontsLoaded, setFontsLoaded] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
   const dirtyRef = useRef(false)
-  const [manageNotes, setManageNotes] = useState<Array<{ id: string; title: string; color: string; createdAt: string; isVisible: boolean; isDocked: boolean; isHidden: boolean; noteType: 'independent' | 'echo' | 'view' }>>([])
+  const [manageNotes, setManageNotes] = useState<Array<{ id: string; title: string; color: string; createdAt: string; isVisible: boolean; isDocked: boolean; isHidden: boolean; noteType: 'independent' | 'echo' | 'view' | 'daily' }>>([])
   const [manageLoading, setManageLoading] = useState(false)
   const [showTagForm, setShowTagForm] = useState(false)
   const [tagNameInput, setTagNameInput] = useState('')
-  const [tagColorInput, setTagColorInput] = useState('#3B82F6')
+  const [tagColorInput, setTagColorInput] = useState('#2563EB')
   const [editingTagId, setEditingTagId] = useState<string | null>(null)
   const tags = useTagStore((s) => s.tags)
   const addTag = useTagStore((s) => s.addTag)
@@ -331,7 +331,7 @@ export function SettingsWindow() {
       } catch (_) {
         // ignore
       }
-      const notes: Array<{ id: string; title: string; color: string; createdAt: string; isVisible: boolean; isDocked: boolean; isHidden: boolean; noteType: 'independent' | 'echo' | 'view' }> = []
+      const notes: Array<{ id: string; title: string; color: string; createdAt: string; isVisible: boolean; isDocked: boolean; isHidden: boolean; noteType: 'independent' | 'echo' | 'view' | 'daily' }> = []
       for (const f of files) {
         const rawKey = f.replace('.json', '')
         let data: unknown = null
@@ -343,7 +343,10 @@ export function SettingsWindow() {
         if (data && typeof data === 'object' && 'id' in data) {
           const noteId = String((data as Record<string, unknown>).id || rawKey.replace('note_', ''))
           const rawNoteType = (data as Record<string, unknown>).noteType
-          const noteType: 'independent' | 'echo' | 'view' = rawNoteType === 'echo' || rawNoteType === 'view' ? rawNoteType : 'independent'
+          const noteType: 'independent' | 'echo' | 'view' | 'daily' =
+            rawNoteType === 'echo' || rawNoteType === 'view' || rawNoteType === 'daily'
+              ? rawNoteType
+              : 'independent'
           const isDocked = (data as Record<string, unknown>).isDocked === true
           const isHidden = (data as Record<string, unknown>).isHidden === true
           if (noteType === 'view' || noteId === 'note_view_default') continue
@@ -437,8 +440,8 @@ export function SettingsWindow() {
   }
 
   const isDark = themeMode === 'dark'
-  const bgHex = isDark ? '#0d0d10' : '#ffffff'
-  const textColor = isDark ? '#e2e8f0' : '#1a1a2e'
+  const bgHex = isDark ? '#08111F' : '#F7FAFC'
+  const textColor = isDark ? '#EAF2FF' : '#132033'
   // Dynamic opacities: light bg needs higher opacity for readability
   const labelO = isDark ? 0.42 : 0.62
   const mutedO = isDark ? 0.6 : 0.75
@@ -650,16 +653,16 @@ export function SettingsWindow() {
                           {note.isVisible ? '可见' : '隐藏'}
                         </span>
                         <span className="ml-1 px-1 py-0.5 rounded text-[9px]" style={{
-                          backgroundColor: note.isDocked ? '#3b82f615' : '#88888810',
-                          color: note.isDocked ? '#3b82f6' : '#888888',
+                          backgroundColor: note.isDocked ? '#38bdf815' : '#88888810',
+                          color: note.isDocked ? '#38bdf8' : '#888888',
                         }}>
                           {note.isDocked ? '已挂载' : '外部'}
                         </span>
                         <span className="ml-1 px-1 py-0.5 rounded text-[9px]" style={{
-                          backgroundColor: note.noteType === 'echo' ? '#a855f715' : '#f59e0b15',
-                          color: note.noteType === 'echo' ? '#a855f7' : '#f59e0b',
+                          backgroundColor: note.noteType === 'echo' ? '#a855f715' : note.noteType === 'daily' ? '#22c55e15' : '#f59e0b15',
+                          color: note.noteType === 'echo' ? '#a855f7' : note.noteType === 'daily' ? '#22c55e' : '#f59e0b',
                         }}>
-                          {note.noteType === 'echo' ? '视图便签' : '独立便签'}
+                          {note.noteType === 'echo' ? '视图便签' : note.noteType === 'daily' ? '每日待办' : '独立便签'}
                         </span>
                       </div>
                     </div>
@@ -716,7 +719,7 @@ export function SettingsWindow() {
                 onClick={() => {
                   setEditingTagId(null)
                   setTagNameInput('')
-                  setTagColorInput('#3B82F6')
+                  setTagColorInput('#2563EB')
                   setShowTagForm(true)
                 }}
                 className="text-xs opacity-55 hover:opacity-80 transition-opacity px-2 py-0.5 rounded border"
@@ -770,6 +773,20 @@ export function SettingsWindow() {
                   >
                     取消
                   </button>
+                </div>
+                <div className="grid grid-cols-12 gap-1 pt-1">
+                  {APP_COLOR_PALETTE.map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => setTagColorInput(color)}
+                      className={`h-4 rounded transition-transform hover:scale-110 ${tagColorInput.toLowerCase() === color.toLowerCase() ? 'ring-2 ring-primary/70 ring-offset-1 ring-offset-background' : ''}`}
+                      style={{
+                        backgroundColor: color,
+                        boxShadow: 'inset 0 0 0 1px rgba(15,23,42,0.18), 0 0 0 1px rgba(255,255,255,0.20)',
+                      }}
+                      title={color}
+                    />
+                  ))}
                 </div>
               </div>
             )}

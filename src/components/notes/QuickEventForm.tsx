@@ -3,7 +3,7 @@ import type { Note } from '@/types/notes.types'
 import type { CalendarEvent } from '@/types/calendar.types'
 import { X } from 'lucide-react'
 import { useTagStore } from '@/stores/tag.store'
-import { hexToLuminance, normalizeHexColor } from '@/lib/utils'
+import { getLocalDateKey, hexToLuminance, normalizeHexColor } from '@/lib/utils'
 
 interface QuickEventFormProps {
   note: Note
@@ -17,7 +17,7 @@ export function QuickEventForm({ note, onClose, onSaved }: QuickEventFormProps) 
     ? note.viewTagIds
     : (note.echoTagId ? [note.echoTagId] : [])
   const [title, setTitle] = useState('')
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [date, setDate] = useState(() => getLocalDateKey())
   const [endDate, setEndDate] = useState('')
   const [startTime, setStartTime] = useState('')
   const [selectedTagId, setSelectedTagId] = useState(() => selectedTagIds[0] || '')

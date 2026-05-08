@@ -41,7 +41,7 @@ export function TodoItem({ item, note }: TodoItemProps) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, height: 0 }}
       transition={{ duration: 0.15 }}
-      className="flex items-center gap-2 group py-0.5 min-w-0"
+      className="note-todo-item flex items-center gap-2 group py-1 px-1.5 min-w-0"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -80,7 +80,7 @@ export function TodoItem({ item, note }: TodoItemProps) {
             textDecorationColor: item.isCompleted ? note.color : undefined,
             textDecorationThickness: '1.5px',
           }}
-          title={item.isCompleted ? undefined : '双击编辑'}
+          title={item.isCompleted ? undefined : '点击编辑'}
         >
           {item.content}
         </span>

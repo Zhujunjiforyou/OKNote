@@ -6,9 +6,9 @@ type WindowType = 'calendar' | 'notes'
 const perWindowDefaults: PerWindowSettings = {
   fontFamily: 'Inter',
   fontSize: 14,
-  backgroundColor: '#0d0d10',
+  backgroundColor: '#08111F',
   backgroundOpacity: 0.88,
-  textColor: '#e2e8f0',
+  textColor: '#EAF2FF',
 }
 
 /** Merge loaded settings with defaults to ensure all fields exist */

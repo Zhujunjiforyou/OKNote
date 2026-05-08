@@ -4,56 +4,56 @@
 
 @layer base {
   :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 5.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 5.9%;
-    --popover-foreground: 0 0% 98%;
+    --background: 218 59% 8%;
+    --foreground: 214 54% 96%;
+    --card: 218 47% 11%;
+    --card-foreground: 214 54% 96%;
+    --popover: 218 47% 11%;
+    --popover-foreground: 214 54% 96%;
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
+    --secondary: 218 37% 15%;
+    --secondary-foreground: 214 54% 96%;
+    --muted: 218 32% 16%;
+    --muted-foreground: 216 21% 70%;
+    --accent: 217 42% 18%;
+    --accent-foreground: 214 54% 96%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
+    --border: 216 29% 22%;
+    --input: 216 29% 22%;
     --ring: 217 91% 60%;
     --radius: 0.5rem;
 
-    --sidebar-bg: 240 10% 3.9%;
-    --sidebar-hover: 240 3.7% 12%;
-    --sidebar-active: 240 3.7% 15.9%;
+    --sidebar-bg: 218 59% 8%;
+    --sidebar-hover: 218 37% 14%;
+    --sidebar-active: 218 37% 16%;
   }
 
   .light {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
+    --background: 210 43% 98%;
+    --foreground: 220 44% 14%;
+    --card: 210 40% 99%;
+    --card-foreground: 220 44% 14%;
+    --popover: 210 40% 99%;
+    --popover-foreground: 220 44% 14%;
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
+    --secondary: 214 32% 92%;
+    --secondary-foreground: 220 44% 14%;
+    --muted: 214 32% 92%;
+    --muted-foreground: 220 16% 43%;
+    --accent: 213 86% 93%;
+    --accent-foreground: 220 44% 14%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
+    --border: 214 26% 84%;
+    --input: 214 26% 84%;
     --ring: 217 91% 60%;
 
-    --sidebar-bg: 240 5% 96%;
-    --sidebar-hover: 240 5% 90%;
-    --sidebar-active: 240 5% 88%;
+    --sidebar-bg: 210 40% 96%;
+    --sidebar-hover: 213 58% 92%;
+    --sidebar-active: 213 66% 88%;
   }
 }
 
@@ -134,30 +134,113 @@ html.electron-transparent #root {
 .calendar-collapsed {
   overflow: hidden !important;
 }
+
+.calendar-collapsed::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 80;
+  width: 72px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--calendar-text) 38%, transparent);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.10), 0 4px 14px rgba(4,10,24,0.18);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.calendar-collapsed .cal-window-bg {
+  opacity: 0.58;
+}
+
 .calendar-collapsed .cal-main-content,
 .calendar-collapsed .dock-resizer,
 .calendar-collapsed [data-dock-area] {
   display: none !important;
 }
 .calendar-collapsed .cal-titlebar {
-  min-height: 36px;
-  padding-top: 0.35rem;
-  padding-bottom: 0.35rem;
+  min-height: 18px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 .calendar-collapsed .cal-left-actions,
 .calendar-collapsed .cal-right-actions,
+.calendar-collapsed .cal-month-nav,
 .calendar-collapsed .cal-chevron-left,
 .calendar-collapsed .cal-chevron-right {
   display: none !important;
 }
 
-@media (max-width: 560px) {
+.calendar-window:not(.calendar-collapsed) .cal-titlebar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 0.5rem;
+}
+
+.cal-left-actions,
+.cal-right-actions {
+  min-width: 0;
+}
+
+.cal-left-actions {
+  justify-self: start;
+  max-width: 100%;
+  overflow: visible;
+  flex-wrap: nowrap;
+}
+
+.cal-left-actions-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  gap: 0.25rem;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.cal-month-nav {
+  grid-column: 2;
+  justify-self: center;
+  white-space: nowrap;
+}
+
+.cal-right-actions {
+  justify-self: end;
+}
+
+.cal-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: none;
+}
+
+.cal-action-hidden {
+  max-width: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  border-width: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+@media (max-width: 860px) {
   .calendar-window:not(.calendar-collapsed) .cal-left-actions {
-    display: none !important;
+    gap: 0.25rem;
   }
 
-  .calendar-window:not(.calendar-collapsed) .cal-titlebar {
-    justify-content: flex-end;
+  .calendar-window:not(.calendar-collapsed) .cal-action {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
   }
 }
 
@@ -170,6 +253,31 @@ html.electron-transparent #root {
     padding-left: 0.75rem;
     padding-right: 0.75rem;
   }
+}
+
+.calendar-density-compact:not(.calendar-collapsed) .cal-titlebar {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.calendar-density-compact:not(.calendar-collapsed) .cal-main-content {
+  padding-left: 0.55rem;
+  padding-right: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+
+.calendar-density-compact:not(.calendar-collapsed) .cal-chevron-left,
+.calendar-density-compact:not(.calendar-collapsed) .cal-chevron-right {
+  width: 1.55rem !important;
+  height: 1.55rem !important;
+}
+
+.calendar-density-compact .view-note-panel {
+  width: clamp(190px, 30vw, 260px) !important;
+}
+
+.calendar-density-compact .view-filter-chip {
+  padding: 0.18rem 0.42rem;
 }
 
 .calendar-window:not(.calendar-collapsed) .cal-main-content,
@@ -314,8 +422,17 @@ html.electron-transparent #root {
 }
 
 .docked-note-card {
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  border-radius: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background:
+    linear-gradient(155deg, rgba(255,255,255,0.22), rgba(255,255,255,0.05) 38%, rgba(0,0,0,0.06)),
+    var(--note-shell);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 18px 48px rgba(4, 10, 24, 0.34);
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.10);
 }
@@ -343,44 +460,70 @@ html.electron-transparent #root {
 }
 
 .docked-note-card-independent::before {
-  border-top: 7px solid color-mix(in srgb, var(--note-accent) 82%, white 18%);
+  border-top: 5px solid color-mix(in srgb, var(--note-accent) 74%, white 26%);
   background:
+    radial-gradient(circle at 86% 88%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 24%),
     linear-gradient(180deg, rgba(255,255,255,0.18), transparent 28%),
-    repeating-linear-gradient(180deg, transparent 0 27px, rgba(255,255,255,0.10) 27px 28px);
+    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.075) 31px 32px);
 }
 
 .docked-note-card-independent::after {
   inset: 9px 10px auto auto;
-  width: 32px;
-  height: 16px;
-  border-radius: 0 0 5px 5px;
-  background: rgba(255, 255, 255, 0.18);
+  width: 30px;
+  height: 18px;
+  border-radius: 2px 2px 5px 5px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.10));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
   transform: rotate(2deg);
-  opacity: 0.62;
+  opacity: 0.54;
 }
 
 .docked-note-card-echo::before {
-  border-left: 10px solid color-mix(in srgb, var(--note-accent) 78%, white 22%);
+  border-left: 7px solid color-mix(in srgb, var(--note-accent) 70%, white 30%);
   background:
-    linear-gradient(90deg, rgba(255,255,255,0.24), transparent 48%),
-    repeating-linear-gradient(90deg, transparent 0 22px, rgba(255,255,255,0.12) 22px 23px),
-    repeating-linear-gradient(180deg, transparent 0 22px, rgba(255,255,255,0.10) 22px 23px);
+    radial-gradient(circle at 82% 82%, color-mix(in srgb, var(--note-accent) 20%, transparent), transparent 25%),
+    linear-gradient(90deg, rgba(255,255,255,0.22), transparent 48%),
+    repeating-linear-gradient(90deg, transparent 0 24px, rgba(255,255,255,0.105) 24px 25px),
+    repeating-linear-gradient(180deg, transparent 0 24px, rgba(255,255,255,0.08) 24px 25px);
 }
 
 .docked-note-card-echo::after {
   inset: auto 14px 52px auto;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   background:
     radial-gradient(circle at 50% 50%, rgba(255,255,255,0.12) 0 3px, transparent 3px),
     conic-gradient(from 0deg, transparent 0 25%, rgba(255,255,255,0.16) 25% 34%, transparent 34% 58%, rgba(255,255,255,0.16) 58% 67%, transparent 67%);
-  opacity: 0.52;
+  opacity: 0.42;
+}
+
+.docked-note-card-daily::before {
+  border-top: 5px solid color-mix(in srgb, var(--note-accent) 74%, white 26%);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.17), transparent 30%),
+    repeating-linear-gradient(0deg, transparent 0 28px, rgba(255,255,255,0.08) 28px 29px),
+    repeating-linear-gradient(90deg, transparent 0 34px, rgba(255,255,255,0.06) 34px 35px);
+}
+
+.docked-note-card-daily::after {
+  inset: 11px 12px auto auto;
+  width: 34px;
+  height: 26px;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.20);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 34%, transparent) 0 28%, rgba(255,255,255,0.12) 28%);
+  opacity: 0.48;
 }
 
 .docked-note-card-active {
-  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.30);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 22px 58px rgba(4, 10, 24, 0.40);
 }
 
 .docked-note-card-inactive {
@@ -388,9 +531,12 @@ html.electron-transparent #root {
 }
 
 .docked-note-card:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--note-accent) 42%, white 26%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 24px 64px rgba(4, 10, 24, 0.46);
+  transform: translateY(-2px);
 }
 
 .docked-note-chip {
@@ -422,10 +568,20 @@ html.electron-transparent #root {
   border-radius: 999px;
 }
 
+.docked-note-kind-badge-daily {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
+    color-mix(in srgb, var(--note-accent) 30%, transparent);
+  border-radius: 5px;
+}
+
 .docked-note-input {
   color: var(--note-text);
-  background: var(--note-panel);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03)),
+    var(--note-panel);
   border: 1px solid var(--note-panel-border);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
 }
 
 .docked-note-input::placeholder {
@@ -435,6 +591,11 @@ html.electron-transparent #root {
 .docked-note-card-dragging {
   opacity: 0.72;
   transform: translateY(-3px) rotate(1deg) !important;
+}
+
+.docked-note-card-attention {
+  animation: docked-note-attention 0.42s ease-in-out 0s 4 alternate;
+  border-color: color-mix(in srgb, var(--note-accent) 82%, white 18%) !important;
 }
 
 .dock-drag-preview {
@@ -465,22 +626,65 @@ html.electron-transparent #root {
 
 .note-window-root {
   position: relative;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  transition: box-shadow 0.18s ease, filter 0.18s ease;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 0;
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    0 18px 52px rgba(4, 10, 24, 0.38);
+  transition: box-shadow 0.18s ease, filter 0.18s ease, border-color 0.18s ease;
 }
 
 .note-window-independent-note {
-  box-shadow: inset 0 5px 0 color-mix(in srgb, var(--note-accent) 76%, white 24%), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 5px 0 color-mix(in srgb, var(--note-accent) 70%, white 30%),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    0 18px 52px rgba(4, 10, 24, 0.38);
 }
 
 .note-window-echo-note {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 8px 0 0 color-mix(in srgb, var(--note-accent) 70%, white 30%), 0 14px 38px rgba(0, 0, 0, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 7px 0 0 color-mix(in srgb, var(--note-accent) 64%, white 36%),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    0 18px 52px rgba(4, 10, 24, 0.38);
+}
+
+.note-window-daily-note {
+  box-shadow:
+    inset 0 5px 0 color-mix(in srgb, var(--note-accent) 70%, white 30%),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    0 18px 52px rgba(4, 10, 24, 0.38);
+}
+
+.note-window-daily-note .note-window-base {
+  background:
+    linear-gradient(155deg, rgba(255,255,255,0.30), rgba(255,255,255,0.08) 34%, rgba(0,0,0,0.06)),
+    radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 32%),
+    var(--note-shell);
+}
+
+.note-window-daily-note .note-window-titlebar {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 28%, transparent), rgba(255,255,255,0.05)),
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.10) 0 1px, transparent 1px 12px);
 }
 
 .note-window-root::before {
   content: "";
   position: absolute;
   inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.note-window-root::after {
+  content: "";
+  position: absolute;
   pointer-events: none;
   z-index: 0;
 }
@@ -495,18 +699,93 @@ html.electron-transparent #root {
   z-index: 0;
 }
 
+.note-window-base {
+  background:
+    linear-gradient(155deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06) 38%, rgba(0,0,0,0.07)),
+    var(--note-shell);
+}
+
+.note-window-titlebar {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 17%, transparent), rgba(255,255,255,0.04));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.note-window-echo-note .note-window-titlebar {
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.075) 0 1px, transparent 1px 7px),
+    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 22%, transparent), rgba(255,255,255,0.04));
+}
+
+.note-accent-line {
+  height: 2px;
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--note-accent) 82%, white 18%), transparent);
+  opacity: 0.72;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--note-accent) 44%, transparent);
+}
+
 .note-window-independent-note::before {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.10), transparent 26%),
-    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.08) 31px 32px);
+    radial-gradient(circle at 85% 82%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 26%),
+    linear-gradient(180deg, rgba(255,255,255,0.12), transparent 26%),
+    repeating-linear-gradient(180deg, transparent 0 33px, rgba(255,255,255,0.07) 33px 34px);
+}
+
+.note-window-independent-note::after {
+  inset: 12px 16px auto auto;
+  width: 46px;
+  height: 22px;
+  border-radius: 2px 2px 6px 6px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.06));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
+  transform: rotate(2deg);
+  opacity: 0.42;
 }
 
 .note-window-echo-note::before {
   background:
+    radial-gradient(circle at 88% 82%, color-mix(in srgb, var(--note-accent) 22%, transparent), transparent 26%),
     linear-gradient(90deg, rgba(255,255,255,0.20), transparent 48%),
-    repeating-linear-gradient(90deg, transparent 0 26px, rgba(255,255,255,0.10) 26px 27px),
-    repeating-linear-gradient(180deg, transparent 0 26px, rgba(255,255,255,0.08) 26px 27px),
-    radial-gradient(circle at 16% 0%, rgba(255,255,255,0.22), transparent 32%);
+    repeating-linear-gradient(90deg, transparent 0 24px, rgba(255,255,255,0.10) 24px 25px),
+    repeating-linear-gradient(180deg, transparent 0 24px, rgba(255,255,255,0.078) 24px 25px),
+    radial-gradient(circle at 16% 0%, rgba(255,255,255,0.18), transparent 32%);
+}
+
+.note-window-echo-note::after {
+  right: 18px;
+  bottom: 64px;
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.16) 0 3px, transparent 3px),
+    conic-gradient(from 18deg, transparent 0 21%, rgba(255,255,255,0.15) 21% 32%, transparent 32% 55%, rgba(255,255,255,0.15) 55% 66%, transparent 66%),
+    radial-gradient(circle at 50% 50%, transparent 0 42%, rgba(255,255,255,0.08) 43% 45%, transparent 46%);
+  opacity: 0.42;
+}
+
+.note-window-daily-note::before {
+  background:
+    radial-gradient(circle at 85% 82%, color-mix(in srgb, var(--note-accent) 22%, transparent), transparent 26%),
+    linear-gradient(180deg, rgba(255,255,255,0.12), transparent 28%),
+    repeating-linear-gradient(180deg, transparent 0 34px, rgba(255,255,255,0.07) 34px 35px),
+    repeating-linear-gradient(90deg, transparent 0 42px, rgba(255,255,255,0.045) 42px 43px);
+}
+
+.note-window-daily-note::after {
+  right: 18px;
+  top: 48px;
+  width: 50px;
+  height: 38px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 34%, transparent) 0 28%, rgba(255,255,255,0.10) 28%),
+    repeating-linear-gradient(90deg, transparent 0 12px, rgba(255,255,255,0.10) 12px 13px);
+  opacity: 0.42;
 }
 
 .note-type-badge {
@@ -529,6 +808,176 @@ html.electron-transparent #root {
     repeating-linear-gradient(90deg, rgba(255,255,255,0.14) 0 1px, transparent 1px 5px),
     color-mix(in srgb, var(--note-accent) 30%, transparent);
   opacity: 0.88;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--note-accent) 18%, transparent);
+}
+
+.note-type-badge-daily {
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--note-accent) 55%, white 26%);
+  background: color-mix(in srgb, var(--note-accent) 28%, transparent);
+  opacity: 0.84;
+}
+
+.daily-todo-panel {
+  border-top: 1px solid color-mix(in srgb, var(--note-accent) 26%, transparent);
+}
+
+.daily-todo-panel::before {
+  content: "";
+  position: absolute;
+  left: 1.35rem;
+  top: 4.4rem;
+  bottom: 0.75rem;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 70%, white 16%), transparent);
+  opacity: 0.34;
+  pointer-events: none;
+}
+
+.daily-todo-panel-compact::before {
+  top: 3.25rem;
+  bottom: 0.35rem;
+}
+
+.daily-todo-panel-compact {
+  overscroll-behavior: contain;
+}
+
+.daily-date-switch {
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    0 10px 24px rgba(4, 10, 24, 0.10);
+}
+
+.daily-date-display {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.06)),
+    color-mix(in srgb, var(--note-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--note-accent) 32%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+}
+
+.daily-date-display-compact {
+  min-width: 0;
+  overflow: visible;
+  padding-left: 0.35rem !important;
+  padding-right: 0.35rem !important;
+}
+
+.daily-date-display-compact > span {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.daily-date-switch {
+  min-height: 3.15rem;
+}
+
+.daily-date-switch-compact {
+  min-height: 2.2rem;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    0 6px 14px rgba(4, 10, 24, 0.08);
+}
+
+.daily-date-switch .daily-date-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.daily-date-switch-compact .daily-date-display {
+  min-height: 1.85rem;
+}
+
+.daily-date-display input,
+.daily-date-display span {
+  text-shadow: none;
+}
+
+.daily-nav-button,
+.daily-today-button,
+.daily-count-chip {
+  background: rgba(255,255,255,0.09);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+.daily-list {
+  padding-left: 0.55rem;
+}
+
+.daily-todo-panel-compact .daily-list {
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  overflow: visible !important;
+  padding-bottom: 0.25rem;
+}
+
+.daily-list .note-todo-item {
+  border-radius: 6px;
+  border-left: 3px solid color-mix(in srgb, var(--note-accent) 62%, white 18%);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 14%, transparent), transparent 46%),
+    color-mix(in srgb, var(--note-panel) 78%, transparent);
+}
+
+.daily-list .note-todo-item:hover {
+  border-left-color: color-mix(in srgb, var(--note-accent) 86%, white 8%);
+}
+
+.daily-empty-date {
+  width: 5.5rem;
+  height: 3.2rem;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 30%, transparent) 0 32%, rgba(255,255,255,0.07) 32%),
+    repeating-linear-gradient(90deg, transparent 0 1.25rem, rgba(255,255,255,0.08) 1.25rem 1.32rem);
+}
+
+.daily-composer {
+  border-radius: 12px;
+  border-style: dashed;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05)),
+    color-mix(in srgb, var(--note-accent) 10%, transparent) !important;
+}
+
+.day-cell-has-daily {
+  background-image:
+    linear-gradient(135deg, rgba(34,197,94,0.15), transparent 42%) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(34,197,94,0.32),
+    inset 3px 0 0 rgba(34,197,94,0.62);
+}
+
+.day-cell-has-daily:hover {
+  background-image:
+    linear-gradient(135deg, rgba(34,197,94,0.20), transparent 46%) !important;
+}
+
+.daily-calendar-chip {
+  max-width: calc(100% - 2rem);
+  color: color-mix(in srgb, var(--calendar-text) 88%, #16a34a 12%);
+  background:
+    linear-gradient(90deg, rgba(34,197,94,0.30), rgba(34,197,94,0.14));
+  border-color: rgba(34,197,94,0.52);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    0 0 0 1px rgba(34,197,94,0.12);
+  text-shadow: none;
+}
+
+.daily-calendar-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.day-event-list > div {
+  text-shadow: none !important;
+  box-shadow: none !important;
 }
 
 .note-window-dock-target {
@@ -542,7 +991,108 @@ html.electron-transparent #root {
 }
 
 .echo-event-item:hover {
-  background-color: rgba(255, 255, 255, 0.10) !important;
+  background-color: rgba(255, 255, 255, 0.18) !important;
+  border-color: color-mix(in srgb, var(--note-accent) 42%, white 26%) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(4, 10, 24, 0.14);
+}
+
+.echo-event-item {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+  transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.echo-event-item-recurring {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--event-color) 42%, transparent) !important;
+  background-image:
+    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 16%, transparent), transparent 52%);
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--event-color) 78%, white 8%),
+    inset 0 1px 0 rgba(255,255,255,0.16);
+}
+
+.echo-event-item-recurring::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--event-color) 66%, white 14%), transparent);
+  opacity: 0.56;
+  pointer-events: none;
+}
+
+.echo-recurring-chip,
+.view-recurring-chip {
+  color: var(--note-text, var(--calendar-text));
+  background: color-mix(in srgb, var(--event-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--event-color) 34%, transparent);
+  font-weight: 700;
+  text-shadow: none;
+}
+
+.view-event-item-recurring {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--event-color) 40%, transparent) !important;
+  background-image:
+    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 14%, transparent), transparent 56%);
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--event-color) 76%, white 10%),
+    inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+.view-event-item-recurring::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--event-color) 62%, white 14%), transparent);
+  opacity: 0.50;
+  pointer-events: none;
+}
+
+.echo-event-item-recurring:hover,
+.view-event-item-recurring:hover {
+  border-color: color-mix(in srgb, var(--event-color) 58%, white 12%) !important;
+  background-image:
+    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 22%, transparent), transparent 58%);
+}
+
+.note-todo-item {
+  border-radius: 8px;
+  color: var(--note-text);
+  background: color-mix(in srgb, var(--note-panel) 70%, transparent);
+  border: 1px solid transparent;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.note-todo-item:hover {
+  background: var(--note-panel);
+  border-color: var(--note-panel-border);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(4, 10, 24, 0.12);
+}
+
+.note-composer-control {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    0 8px 22px rgba(4, 10, 24, 0.10);
+}
+
+.note-composer-control input::placeholder {
+  color: var(--note-muted);
+}
+
+.view-filter-chip {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
 }
 
 .day-event-list {
@@ -580,6 +1130,24 @@ html.electron-transparent #root {
   }
 }
 
+@keyframes docked-note-attention {
+  from {
+    transform: translateY(0);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.30),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+      0 22px 58px rgba(4, 10, 24, 0.40);
+  }
+  to {
+    transform: translateY(-5px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.36),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+      0 0 0 2px color-mix(in srgb, var(--note-accent) 62%, white 22%),
+      0 26px 70px color-mix(in srgb, var(--note-accent) 30%, rgba(4,10,24,0.42));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .calendar-window,
   .calendar-window .cal-main-content,
@@ -588,6 +1156,7 @@ html.electron-transparent #root {
   .dock-main-strip,
   .dock-board,
   .docked-note-card,
+  .docked-note-card-attention,
   .dock-drag-preview,
   .animate-note-in,
   .dock-empty-state {

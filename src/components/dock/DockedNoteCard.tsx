@@ -6,19 +6,19 @@ import type { Note } from '@/types/notes.types'
 import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
-import { Check, Plus, MoreHorizontal, Eye, ListTodo } from 'lucide-react'
-import { hexToLuminance, normalizeHexColor } from '@/lib/utils'
+import { CalendarCheck, Check, Plus, MoreHorizontal, Eye, ListTodo } from 'lucide-react'
+import { DailyTodoPanel } from '@/components/notes/DailyTodoPanel'
+import { NOTE_COLOR_PALETTE, hexToLuminance, normalizeHexColor } from '@/lib/utils'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import type { EventTag } from '@/types/tag.types'
 
 interface DockedNoteCardProps {
   note: Note
   isActive: boolean
+  attention?: boolean
 }
 
-const NOTE_COLORS = ['#FF8C42', '#22D3EE', '#FB7185', '#A78BFA', '#FBBF24', '#34D399', '#F472B6', '#60A5FA', '#F59E0B', '#818CF8', '#FB923C', '#38BDF8', '#A3E635', '#E879F9', '#FDA4AF', '#67E8F9']
-
-export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
+export function DockedNoteCard({ note, isActive, attention = false }: DockedNoteCardProps) {
   const updateNote = useNotesStore((s) => s.updateNote)
   const addItem = useNotesStore((s) => s.addItem)
   const deleteNote = useNotesStore((s) => s.deleteNote)
@@ -39,6 +39,7 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
   const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; dockRect: DOMRect; outside: boolean; moved: boolean; previewStarted: boolean } | null>(null)
 
   const isEcho = note.noteType === 'echo'
+  const isDaily = note.noteType === 'daily'
   const selectedEchoTagIds = isEcho
     ? (Array.isArray(note.viewTagIds) && note.viewTagIds.length > 0
         ? note.viewTagIds
@@ -53,8 +54,8 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
   const lightBg = hexToLuminance(noteColor) > 0.58
   const textColor = lightBg ? '#111827' : '#f8fafc'
   const mutedTextColor = lightBg ? 'rgba(17, 24, 39, 0.64)' : 'rgba(248, 250, 252, 0.70)'
-  const panelBg = lightBg ? 'rgba(255,255,255,0.30)' : 'rgba(0,0,0,0.16)'
-  const panelBorder = lightBg ? 'rgba(17,24,39,0.12)' : 'rgba(255,255,255,0.16)'
+  const panelBg = lightBg ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.13)'
+  const panelBorder = lightBg ? 'rgba(17,24,39,0.13)' : 'rgba(255,255,255,0.17)'
 
   const persistNote = useCallback((nextNote: Note) => {
     updateNote(nextNote)
@@ -204,7 +205,7 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
 
   return (
     <div
-      className={`docked-note-card relative flex flex-col h-full rounded-lg overflow-hidden select-none ${isEcho ? 'docked-note-card-echo' : 'docked-note-card-independent'} ${isActive ? 'docked-note-card-active' : 'docked-note-card-inactive'} ${dragPreview ? 'docked-note-card-dragging' : ''}`}
+      className={`docked-note-card relative flex flex-col h-full rounded-lg overflow-hidden select-none ${isEcho ? 'docked-note-card-echo' : isDaily ? 'docked-note-card-daily' : 'docked-note-card-independent'} ${isActive ? 'docked-note-card-active' : 'docked-note-card-inactive'} ${dragPreview ? 'docked-note-card-dragging' : ''} ${attention ? 'docked-note-card-attention' : ''}`}
       style={{
         backgroundColor: bgWithAlpha,
         color: textColor,
@@ -213,6 +214,7 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
         ['--note-panel' as string]: panelBg,
         ['--note-panel-border' as string]: panelBorder,
         ['--note-accent' as string]: noteColor,
+        ['--note-shell' as string]: bgWithAlpha,
         fontFamily: `"${noteSettings.fontFamily}", system-ui, sans-serif`,
         fontSize: noteSettings.fontSize,
       }}
@@ -248,9 +250,9 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
               {note.title}
             </span>
           )}
-          <span className={`text-[0.58em] px-1.5 py-0.5 shrink-0 inline-flex items-center gap-1 docked-note-kind-badge ${isEcho ? 'docked-note-kind-badge-echo' : 'docked-note-kind-badge-independent'}`}>
-            {isEcho ? <Eye size={9} /> : <ListTodo size={9} />}
-            {isEcho ? '视图' : '独立'}
+          <span className={`text-[0.58em] px-1.5 py-0.5 shrink-0 inline-flex items-center gap-1 docked-note-kind-badge ${isEcho ? 'docked-note-kind-badge-echo' : isDaily ? 'docked-note-kind-badge-daily' : 'docked-note-kind-badge-independent'}`}>
+            {isEcho ? <Eye size={9} /> : isDaily ? <CalendarCheck size={9} /> : <ListTodo size={9} />}
+            {isEcho ? '视图' : isDaily ? '每日' : '独立'}
           </span>
           {isEcho && selectedEchoTags.length > 0 && (
             <span className="text-[0.6em] px-1.5 py-0.5 rounded-full shrink-0 docked-note-chip">
@@ -272,67 +274,86 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
         </div>
       </div>
 
-      {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        {isEcho ? (
-          <>
-            {showQuickEventForm && (
-              <QuickEventForm
-                note={note}
-                onClose={closeQuickEventForm}
-                onSaved={closeQuickEventForm}
-              />
-            )}
-            <EchoEventList
-              note={note}
-              compact
-              onSelectEvent={(event) => {
-                window.electronAPI?.openEventEditor(event)
-              }}
-            />
-          </>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            {(note.items || []).map((item) => (
-              <TodoItem key={item.id} item={item} note={note} />
-            ))}
-            {(note.items || []).length === 0 && (
-              <div className="py-6 text-center text-[0.7em] opacity-20">暂无待办</div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="px-2.5 py-1.5 shrink-0 border-t" style={{ borderColor: panelBorder, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        {isEcho ? (
-          <button
-            onClick={() => {
-              setShowQuickEventForm(true)
-            }}
-            className="w-full text-[0.7em] py-1.5 rounded-md docked-note-input transition-colors"
+      {isDaily ? (
+        <DailyTodoPanel
+          note={note}
+          compact
+          panelBg={panelBg}
+          panelBorder={panelBorder}
+          textColor={textColor}
+          mutedColor={mutedTextColor}
+          lightBg={lightBg}
+        />
+      ) : (
+        <>
+          {/* Body */}
+          <div
+            className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-1.5"
+            data-note-wheel-scroll
+            onWheel={(event) => event.stopPropagation()}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            + 新建事件
-          </button>
-        ) : (
-          <div className="flex gap-1">
-            <input
-              value={newTodo}
-              onChange={(e) => setNewTodo(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
-              placeholder="添加待办..."
-              className="flex-1 docked-note-input rounded-md px-2 py-1.5 text-[0.7em] outline-none placeholder:opacity-45"
-            />
-            <button
-              onClick={handleAddTodo}
-              disabled={!newTodo.trim()}
-              className="px-2 py-1 rounded-md docked-note-input transition-colors disabled:opacity-35"
-            >
-              <Plus size={12} />
-            </button>
+            {isEcho ? (
+              <>
+                {showQuickEventForm && (
+                  <QuickEventForm
+                    note={note}
+                    onClose={closeQuickEventForm}
+                    onSaved={closeQuickEventForm}
+                  />
+                )}
+                <EchoEventList
+                  note={note}
+                  compact
+                  onSelectEvent={(event) => {
+                    window.electronAPI?.openEventEditor(event)
+                  }}
+                />
+              </>
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                {(note.items || []).map((item) => (
+                  <TodoItem key={item.id} item={item} note={note} />
+                ))}
+                {(note.items || []).length === 0 && (
+                  <div className="py-6 text-center text-[0.7em] opacity-20">暂无待办</div>
+                )}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          {/* Footer */}
+          <div className="px-2.5 py-1.5 shrink-0 border-t" style={{ borderColor: panelBorder, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            {isEcho ? (
+              <button
+                onClick={() => {
+                  setShowQuickEventForm(true)
+                }}
+                className="w-full text-[0.7em] py-1.5 rounded-md docked-note-input transition-colors"
+              >
+                + 新建事件
+              </button>
+            ) : (
+              <div className="flex gap-1">
+                <input
+                  value={newTodo}
+                  onChange={(e) => setNewTodo(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+                  placeholder="添加待办..."
+                  className="flex-1 docked-note-input rounded-md px-2 py-1.5 text-[0.7em] outline-none placeholder:opacity-70"
+                />
+                <button
+                  onClick={handleAddTodo}
+                  disabled={!newTodo.trim()}
+                  className="px-2 py-1 rounded-md docked-note-input transition-colors disabled:opacity-35"
+                >
+                  <Plus size={12} />
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Portal menu */}
       {showMenu && createPortal(
@@ -344,12 +365,15 @@ export function DockedNoteCard({ note, isActive }: DockedNoteCardProps) {
           >
             <div className="px-3 py-2">
               <div className="flex gap-1.5 flex-wrap">
-                {NOTE_COLORS.map((color) => (
+                {NOTE_COLOR_PALETTE.map((color) => (
                   <button
                     key={color}
                     onClick={() => updateColor(color)}
                     className={`h-4 w-4 rounded-full transition-transform hover:scale-125 ${color === noteColor ? 'ring-2 ring-white/70 ring-offset-1 ring-offset-background' : ''}`}
-                    style={{ backgroundColor: color }}
+                    style={{
+                      backgroundColor: color,
+                      boxShadow: 'inset 0 0 0 1px rgba(15,23,42,0.18), 0 0 0 1px rgba(255,255,255,0.20)',
+                    }}
                     title="更换颜色"
                   />
                 ))}

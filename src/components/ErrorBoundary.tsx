@@ -37,7 +37,7 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="h-screen w-screen flex items-center justify-center bg-[#0d0d10] select-none overflow-auto p-4">
+        <div className="h-screen w-screen flex items-center justify-center bg-[#08111f] select-none overflow-auto p-4">
           <div className="text-left space-y-1 max-w-full">
             <div className="text-sm text-red-400 font-semibold mb-2">应用出现错误</div>
             <div className="text-xs text-red-300/80 whitespace-pre-wrap break-all" style={{ maxWidth: '90vw' }}>

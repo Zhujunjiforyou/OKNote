@@ -15,6 +15,8 @@ export function DockedNotesCarousel() {
   const [activeIndex, setActiveIndex] = useState(0)
   const [containerWidth, setContainerWidth] = useState(0)
   const [slideDirection, setSlideDirection] = useState(1)
+  const [attentionNoteId, setAttentionNoteId] = useState<string | null>(null)
+  const attentionTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -47,6 +49,31 @@ export function DockedNotesCarousel() {
   useEffect(() => {
     setActiveIndex((index) => dockedNotes.length > 0 ? mod(index) : 0)
   }, [dockedNotes.length, mod])
+
+  useEffect(() => {
+    return () => {
+      if (attentionTimerRef.current != null) window.clearTimeout(attentionTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return
+    return window.electronAPI.onFocusNote((payload) => {
+      const noteId = payload?.noteId
+      if (!noteId) return
+      const index = dockedNotes.findIndex((note) => note.id === noteId)
+      if (index >= 0) {
+        setSlideDirection(index >= activeIndex ? 1 : -1)
+        setActiveIndex(loopEnabled ? mod(index) : Math.min(index, maxStartIndex))
+      }
+      setAttentionNoteId(noteId)
+      if (attentionTimerRef.current != null) window.clearTimeout(attentionTimerRef.current)
+      attentionTimerRef.current = window.setTimeout(() => {
+        setAttentionNoteId((current) => current === noteId ? null : current)
+        attentionTimerRef.current = null
+      }, 1700)
+    })
+  }, [activeIndex, dockedNotes, loopEnabled, maxStartIndex, mod])
 
   const step = useCallback((delta: number) => {
     setSlideDirection(delta >= 0 ? 1 : -1)
@@ -83,12 +110,12 @@ export function DockedNotesCarousel() {
           >
             {leftPeekNote && (
               <div className="dock-peek dock-peek-left absolute top-1/2 h-[calc(100%_-_28px)] w-[240px]">
-                <DockedNoteCard note={leftPeekNote} isActive={false} />
+                <DockedNoteCard note={leftPeekNote} isActive={false} attention={attentionNoteId === leftPeekNote.id} />
               </div>
             )}
             {rightPeekNote && (
               <div className="dock-peek dock-peek-right absolute top-1/2 h-[calc(100%_-_28px)] w-[240px]">
-                <DockedNoteCard note={rightPeekNote} isActive={false} />
+                <DockedNoteCard note={rightPeekNote} isActive={false} attention={attentionNoteId === rightPeekNote.id} />
               </div>
             )}
             <div
@@ -106,7 +133,7 @@ export function DockedNotesCarousel() {
                     transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
                     className="dock-board-item h-full w-[240px] shrink-0"
                   >
-                    <DockedNoteCard note={note} isActive />
+                    <DockedNoteCard note={note} isActive attention={attentionNoteId === note.id} />
                   </motion.div>
                 ))}
               </AnimatePresence>
