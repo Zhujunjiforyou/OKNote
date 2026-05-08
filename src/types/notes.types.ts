@@ -6,9 +6,13 @@ export interface Note {
   transparency: number
   fontFamily: string
   fontSize: number
-  noteType: 'independent' | 'echo' | 'view'
+  noteType: 'independent' | 'echo' | 'view' | 'daily'
   echoTagId?: string
   viewTagIds?: string[]
+  dailyTodo?: {
+    activeDate?: string
+    lastResetDate?: string
+  }
   isDocked?: boolean
   dockedOrder?: number
   isHidden?: boolean
@@ -24,6 +28,7 @@ export interface NoteItem {
   content: string
   isCompleted: boolean
   sortOrder: number
+  todoDate?: string
   completedAt?: string
 }
 

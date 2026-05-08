@@ -10,7 +10,7 @@ interface NotesStore {
   updateNote: (note: Note) => void
   deleteNote: (id: string) => void
 
-  addItem: (noteId: string, content: string) => void
+  addItem: (noteId: string, content: string, options?: { todoDate?: string }) => void
   toggleItem: (noteId: string, itemId: string) => void
   deleteItem: (noteId: string, itemId: string) => void
   updateItemContent: (noteId: string, itemId: string, content: string) => void
@@ -73,11 +73,25 @@ export const useNotesStore = create<NotesStore>((set) => ({
     deleteNoteFile(id)
   },
 
-  addItem: (noteId, content) => {
+  addItem: (noteId, content, options) => {
     set((s) => {
       const updated = s.notes.map((n) =>
         n.id === noteId
-          ? { ...n, updatedAt: now(), items: [...n.items, { id: generateId(), noteId, content, isCompleted: false, sortOrder: n.items.length }] }
+          ? {
+              ...n,
+              updatedAt: now(),
+              items: [
+                ...n.items,
+                {
+                  id: generateId(),
+                  noteId,
+                  content,
+                  isCompleted: false,
+                  sortOrder: n.items.length,
+                  ...(options?.todoDate ? { todoDate: options.todoDate } : {}),
+                },
+              ],
+            }
           : n
       )
       const note = updated.find((n) => n.id === noteId)
