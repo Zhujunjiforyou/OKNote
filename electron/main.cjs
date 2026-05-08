@@ -5,14 +5,76 @@ const { exec } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 const DEV_PORT = parseInt(process.env.VITE_PORT || '5199', 10);
-const BOUNDS_FILE = path.join(app.getPath('userData'), 'window-bounds.json');
+const LEGACY_USER_DATA_DIR = app.getPath('userData');
+
+function samePath(a, b) {
+  return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+}
+
+function ensureWritableDir(dir) {
+  const probe = path.join(dir, `.oknote-write-test-${Date.now()}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(probe, 'ok', 'utf-8');
+    fs.unlinkSync(probe);
+    return true;
+  } catch (e) {
+    try { if (fs.existsSync(probe)) fs.unlinkSync(probe); } catch {}
+    console.error('ensureWritableDir failed:', dir, e.message);
+    return false;
+  }
+}
+
+function copyMissingRecursive(src, dest) {
+  if (!fs.existsSync(src)) return;
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const name of fs.readdirSync(src)) {
+      copyMissingRecursive(path.join(src, name), path.join(dest, name));
+    }
+    return;
+  }
+  if (fs.existsSync(dest)) return;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+}
+
+function migrateUserData(fromDir, toDir) {
+  if (!fromDir || !toDir || samePath(fromDir, toDir) || !fs.existsSync(fromDir)) return;
+  for (const name of ['settings.json', 'window-bounds.json', 'data', 'Local Storage']) {
+    try {
+      copyMissingRecursive(path.join(fromDir, name), path.join(toDir, name));
+    } catch (e) {
+      console.error('migrateUserData failed:', name, e.message);
+    }
+  }
+}
+
+function resolveUserDataDir() {
+  const envDir = process.env.OKNOTE_DATA_DIR ? path.resolve(process.env.OKNOTE_DATA_DIR) : null;
+  const installDir = app.isPackaged ? path.join(path.dirname(process.execPath), 'user-data') : null;
+  const preferredDir = envDir || installDir;
+
+  if (preferredDir && ensureWritableDir(preferredDir)) {
+    migrateUserData(LEGACY_USER_DATA_DIR, preferredDir);
+    app.setPath('userData', preferredDir);
+    return preferredDir;
+  }
+
+  ensureWritableDir(LEGACY_USER_DATA_DIR);
+  return LEGACY_USER_DATA_DIR;
+}
+
+const USER_DATA_DIR = resolveUserDataDir();
+const BOUNDS_FILE = path.join(USER_DATA_DIR, 'window-bounds.json');
 
 // ── Window registry ──
 const winRegistry = { calendar: null, notes: {}, settings: null };
 
 // ── Settings ──
-const DATA_DIR = path.join(app.getPath('userData'), 'data');
-const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+const DATA_DIR = path.join(USER_DATA_DIR, 'data');
+const settingsPath = path.join(USER_DATA_DIR, 'settings.json');
 let windowBounds = {};
 
 function loadWindowBounds() {
@@ -56,9 +118,9 @@ function debouncedSaveWindowBounds() {
 const perWindowDefaults = {
   fontFamily: 'Inter',
   fontSize: 14,
-  backgroundColor: '#0d0d10',
+  backgroundColor: '#08111F',
   backgroundOpacity: 0.88,
-  textColor: '#e2e8f0',
+  textColor: '#EAF2FF',
 };
 let appSettings = {
   themeMode: 'dark',
@@ -141,19 +203,65 @@ function notifyNotesChanged() {
   }
 }
 
-const NOTE_COLORS = ['#FF8C42', '#22D3EE', '#FB7185', '#A78BFA', '#FBBF24', '#34D399', '#F472B6', '#60A5FA', '#F59E0B', '#818CF8', '#FB923C', '#38BDF8', '#A3E635', '#E879F9', '#FDA4AF', '#67E8F9'];
-function safeHexColor(value, fallback = '#6366f1') {
+const NOTE_COLORS = ['#047857', '#0D9488', '#5EEAD4', '#06B6D4', '#38BDF8', '#2563EB', '#4F46E5', '#8B5CF6', '#C4B5FD', '#D946EF', '#BE185D', '#F9A8D4', '#F43F5E', '#DC2626', '#F97316', '#FDBA74', '#F59E0B', '#FDE047', '#A3E635', '#22C55E', '#84CC16', '#64748B', '#334155', '#92400E'];
+function safeHexColor(value, fallback = '#2563EB') {
   return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+}
+function todayDateKey() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function findDailyNoteId() {
+  ensureDataDir();
+  try {
+    const files = fs.readdirSync(DATA_DIR).filter(f => f.startsWith('note_') && f.endsWith('.json'));
+    for (const file of files) {
+      const raw = loadAppData(file);
+      if (raw && typeof raw === 'object' && raw.noteType === 'daily' && typeof raw.id === 'string') {
+        return raw.id;
+      }
+    }
+  } catch (e) { console.error('findDailyNoteId failed:', e.message); }
+  return null;
+}
+function openDailyNoteWindow() {
+  const existingId = findDailyNoteId();
+  if (existingId) {
+    const note = loadNoteData(existingId);
+    saveNoteData(existingId, { ...(note || {}), isHidden: false });
+    if (note && note.isDocked === true) {
+      showCalendar();
+      notifyNotesChanged();
+      const sendFocus = () => {
+        const cal = winRegistry.calendar;
+        if (cal && !cal.isDestroyed()) cal.webContents.send('focus-note', { noteId: existingId, noteType: 'daily' });
+      };
+      setTimeout(sendFocus, 80);
+      setTimeout(sendFocus, 260);
+      return;
+    }
+    createNoteWindow(existingId, false);
+    return;
+  }
+  createNoteWindow(null, true, undefined, { noteType: 'daily', title: '每日待办' });
 }
 function createInitialNote(noteId, options = {}) {
   const ts = new Date().toISOString();
-  const noteType = options && options.noteType === 'echo' ? 'echo' : 'independent';
+  const noteType = options && options.noteType === 'echo'
+    ? 'echo'
+    : options && options.noteType === 'daily'
+      ? 'daily'
+      : 'independent';
   const color = safeHexColor(options && options.color, NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)]);
   const title = typeof options.title === 'string' && options.title.trim()
     ? options.title.trim()
     : noteType === 'echo'
       ? '视图便签'
-      : '新便签';
+      : noteType === 'daily'
+        ? '每日待办'
+        : '新便签';
+  const today = todayDateKey();
   return {
     id: noteId,
     title,
@@ -165,6 +273,7 @@ function createInitialNote(noteId, options = {}) {
     noteType,
     ...(noteType === 'echo' && typeof options.echoTagId === 'string' ? { echoTagId: options.echoTagId } : {}),
     ...(noteType === 'echo' && typeof options.echoTagId === 'string' ? { viewTagIds: [options.echoTagId] } : {}),
+    ...(noteType === 'daily' ? { dailyTodo: { activeDate: today, lastResetDate: today } } : {}),
     isDocked: false,
     isPinned: false,
     isArchived: false,
@@ -254,6 +363,7 @@ function createTray(){
   tray.setToolTip('OKNote');
   tray.setContextMenu(Menu.buildFromTemplate([
     {label:'新建便签',click:()=>createNoteWindow(null,true)},
+    {label:'每日待办',click:()=>openDailyNoteWindow()},
     {label:'新建事件',click:()=>{showCalendar();if(winRegistry.calendar)winRegistry.calendar.webContents.send('action','new-event')}},
     {type:'separator'},
     {label:'显示/隐藏日历',click:()=>toggleCalendar()},
@@ -277,8 +387,94 @@ function createWidget(opts={}){
   });
 }
 
+function intersectionArea(a, b) {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
+}
+
+function workAreaForBounds(bounds) {
+  const displays = screen.getAllDisplays();
+  let best = screen.getPrimaryDisplay();
+  let bestArea = -1;
+  for (const display of displays) {
+    const area = intersectionArea(bounds, display.workArea);
+    if (area > bestArea) {
+      bestArea = area;
+      best = display;
+    }
+  }
+  if (bestArea > 0) return best.workArea;
+  return screen.getDisplayNearestPoint({
+    x: Math.round(bounds.x + bounds.width / 2),
+    y: Math.round(bounds.y + bounds.height / 2),
+  }).workArea;
+}
+
+function clampToRange(value, min, max) {
+  if (max < min) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function sanitizeWindowBounds(rawBounds = {}, fallback = {}) {
+  const fallbackWidth = Number.isFinite(fallback.width) ? fallback.width : 270;
+  const fallbackHeight = Number.isFinite(fallback.height) ? fallback.height : 340;
+  const rough = {
+    x: Number.isFinite(rawBounds.x) ? rawBounds.x : (Number.isFinite(fallback.x) ? fallback.x : 40),
+    y: Number.isFinite(rawBounds.y) ? rawBounds.y : (Number.isFinite(fallback.y) ? fallback.y : 40),
+    width: Number.isFinite(rawBounds.width) ? rawBounds.width : fallbackWidth,
+    height: Number.isFinite(rawBounds.height) ? rawBounds.height : fallbackHeight,
+  };
+  const workArea = workAreaForBounds(rough);
+  const margin = 8;
+  const maxWidth = Math.max(180, workArea.width - margin * 2);
+  const maxHeight = Math.max(180, workArea.height - margin * 2);
+  const width = clampToRange(Math.round(rough.width), 180, maxWidth);
+  const height = clampToRange(Math.round(rough.height), 180, maxHeight);
+  const fallbackX = Number.isFinite(fallback.x) ? Math.round(fallback.x) : workArea.x + margin;
+  const fallbackY = Number.isFinite(fallback.y) ? Math.round(fallback.y) : workArea.y + margin;
+  const rawX = Number.isFinite(rawBounds.x) ? Math.round(rawBounds.x) : fallbackX;
+  const rawY = Number.isFinite(rawBounds.y) ? Math.round(rawBounds.y) : fallbackY;
+  return {
+    x: clampToRange(rawX, workArea.x + margin, workArea.x + workArea.width - width - margin),
+    y: clampToRange(rawY, workArea.y + margin, workArea.y + workArea.height - height - margin),
+    width,
+    height,
+  };
+}
+
+function boundsEqual(a, b) {
+  return a
+    && b
+    && Math.round(a.x) === Math.round(b.x)
+    && Math.round(a.y) === Math.round(b.y)
+    && Math.round(a.width) === Math.round(b.width)
+    && Math.round(a.height) === Math.round(b.height);
+}
+
+function ensureWindowVisible(win) {
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  const workArea = workAreaForBounds(bounds);
+  const visibleLeft = Math.max(bounds.x, workArea.x);
+  const visibleTop = Math.max(bounds.y, workArea.y);
+  const visibleRight = Math.min(bounds.x + bounds.width, workArea.x + workArea.width);
+  const visibleBottom = Math.min(bounds.y + bounds.height, workArea.y + workArea.height);
+  const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+  const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+  const minVisibleWidth = Math.min(bounds.width, 80);
+  const minVisibleHeight = Math.min(bounds.height, 80);
+
+  if (visibleWidth >= minVisibleWidth && visibleHeight >= minVisibleHeight) return;
+
+  const nextBounds = sanitizeWindowBounds(bounds, bounds);
+  if (!boundsEqual(bounds, nextBounds)) win.setBounds(nextBounds);
+}
+
 // ── Calendar ──
-function showCalendar(){const w=winRegistry.calendar;if(w&&!w.isDestroyed()){w.show();w.focus()}else{createCalendarWindow()}}
+function showCalendar(){const w=winRegistry.calendar;if(w&&!w.isDestroyed()){ensureWindowVisible(w);w.show();w.focus()}else{createCalendarWindow()}}
 function toggleCalendar(){const w=winRegistry.calendar;if(w&&!w.isDestroyed()){w.isVisible()?w.hide():(w.show(),w.focus())}else{createCalendarWindow()}}
 function openEventEditorInCalendar(eventData){
   if(!eventData||typeof eventData!=='object'||typeof eventData.id!=='string') return;
@@ -297,12 +493,27 @@ function openEventEditorInCalendar(eventData){
     setTimeout(send,40);
   }
 }
+function getDefaultCalendarBounds(){
+  const { workArea } = screen.getPrimaryDisplay();
+  const margin = 40;
+  const maxWidth = Math.max(360, workArea.width - margin * 2);
+  const maxHeight = Math.max(420, workArea.height - margin * 2);
+  const minWidth = Math.min(760, maxWidth);
+  const minHeight = Math.min(620, maxHeight);
+  const width = clampToRange(Math.round(workArea.width * 0.56), minWidth, Math.max(minWidth, Math.min(980, maxWidth)));
+  const height = clampToRange(Math.round(workArea.height * 0.72), minHeight, Math.max(minHeight, Math.min(760, maxHeight)));
+  return {
+    x: workArea.x + margin,
+    y: workArea.y + margin,
+    width,
+    height,
+  };
+}
 function createCalendarWindow(){
   if(winRegistry.calendar&&!winRegistry.calendar.isDestroyed())return showCalendar(),winRegistry.calendar;
-  const{width:sw}=screen.getPrimaryDisplay().workAreaSize;
-  const defX=Math.min(40,sw-460),defY=40;
   const saved=windowBounds.calendar;
-  winRegistry.calendar=createWidget({width:saved?.width||420,height:saved?.height||500,x:saved?.x!=null?saved.x:defX,y:saved?.y!=null?saved.y:defY});
+  const bounds=sanitizeWindowBounds(saved || {}, getDefaultCalendarBounds());
+  winRegistry.calendar=createWidget(bounds);
   winRegistry.calendar.webContents.on('did-finish-load',()=>{
     const cal=winRegistry.calendar;
     if(!cal||cal.isDestroyed()) return;
@@ -327,10 +538,14 @@ function createCalendarWindow(){
 }
 
 // ── Edge auto-hide (calendar) ──
-const EDGE_COLLAPSED_HEIGHT=36;
+const EDGE_COLLAPSED_HEIGHT=12;
 const EDGE_POLL_INTERVAL=45;
-const EDGE_EXIT_GRACE_MS=55;
+const EDGE_EXIT_GRACE_MS=900;
 const EDGE_HOVER_PADDING=10;
+const EDGE_EXIT_PADDING=72;
+const EDGE_SNAP_THRESHOLD=8;
+const EDGE_TITLEBAR_KEEPALIVE_HEIGHT=88;
+const EDGE_TITLEBAR_KEEPALIVE_X=180;
 let edgeHoverPollTimer=null;
 let isCalendarCollapsed=false;
 let calendarOriginalBounds=null;
@@ -359,7 +574,7 @@ function ensureEdgePolling(){
 function getCalendarEdgeInfo(bounds) {
   const disp=screen.getDisplayNearestPoint({x:bounds.x+Math.floor(bounds.width/2),y:bounds.y+Math.floor(bounds.height/2)});
   const wa=disp.workArea;
-  const threshold=20;
+  const threshold=EDGE_SNAP_THRESHOLD;
   const nearLeft=bounds.x<=wa.x+threshold;
   const nearRight=bounds.x+bounds.width>=wa.x+wa.width-threshold;
   const nearTop=bounds.y<=wa.y+threshold;
@@ -371,6 +586,17 @@ function pointInBounds(point,bounds,padding=0){
     point.x<=bounds.x+bounds.width+padding&&
     point.y>=bounds.y-padding&&
     point.y<=bounds.y+bounds.height+padding;
+}
+
+function pointInEdgeKeepAliveZone(point,bounds){
+  if(pointInBounds(point,bounds,EDGE_EXIT_PADDING)) return true;
+  const titleBand={
+    x:bounds.x-EDGE_TITLEBAR_KEEPALIVE_X,
+    y:bounds.y-EDGE_EXIT_PADDING,
+    width:bounds.width+EDGE_TITLEBAR_KEEPALIVE_X*2,
+    height:Math.min(EDGE_TITLEBAR_KEEPALIVE_HEIGHT,bounds.height)+EDGE_EXIT_PADDING,
+  };
+  return pointInBounds(point,titleBand,0);
 }
 
 function rememberCalendarExpandedBounds(bounds){
@@ -423,7 +649,7 @@ function collapseCalendar(cal){
   if(!cal||cal.isDestroyed()||isCalendarCollapsed) return;
   const cursor=screen.getCursorScreenPoint();
   const b=cal.getBounds();
-  if(pointInBounds(cursor,b,EDGE_HOVER_PADDING)) return;
+  if(pointInEdgeKeepAliveZone(cursor,b)) return;
   rememberCalendarExpandedBounds(b);
   isCalendarCollapsed=true;
   pointerOutsideSince=0;
@@ -474,7 +700,7 @@ function checkEdgeAutoHide(){
     return;
   }
 
-  const pointerInside=pointInBounds(cursor,bounds,EDGE_HOVER_PADDING);
+  const pointerInside=pointInEdgeKeepAliveZone(cursor,bounds);
   if(pointerInside){
     pointerOutsideSince=0;
     if(nearEdge) rememberCalendarExpandedBounds(bounds);
@@ -520,11 +746,11 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 function createDockPreviewHtml(note) {
-  const color = safeHexColor(note && note.color, '#6366f1');
+  const color = safeHexColor(note && note.color, '#2563EB');
   const title = escapeHtml(note && note.title ? note.title : '便签');
-  const tag = note && note.noteType === 'echo' ? '视图' : '独立';
+  const tag = note && note.noteType === 'echo' ? '视图' : note && note.noteType === 'daily' ? '每日' : '独立';
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#1a1a2e;}
+    html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#132033;}
     .card{box-sizing:border-box;width:220px;height:168px;border-radius:8px;border:1px solid rgba(255,255,255,.28);background:${color}dd;box-shadow:0 18px 48px rgba(0,0,0,.34);overflow:hidden;transform:rotate(1.5deg) scale(.98);}
     body.outside .card{border-color:rgba(239,68,68,.58);box-shadow:0 18px 48px rgba(239,68,68,.32);}
     .head{display:flex;align-items:center;gap:8px;padding:10px 12px 5px;font-size:13px;font-weight:600;}
@@ -565,7 +791,7 @@ function createNoteWindow(noteId,isNew,placement,initialOptions){
   if(noteId!=null&&typeof noteId!=='string') return null;
   noteId=noteId||generateNoteId();
   if(isNew && !loadNoteData(noteId)) saveNoteData(noteId, createInitialNote(noteId, initialOptions || {}));
-  if(winRegistry.notes[noteId]&&!winRegistry.notes[noteId].isDestroyed()){winRegistry.notes[noteId].show();winRegistry.notes[noteId].focus();return winRegistry.notes[noteId]}
+  if(winRegistry.notes[noteId]&&!winRegistry.notes[noteId].isDestroyed()){ensureWindowVisible(winRegistry.notes[noteId]);winRegistry.notes[noteId].show();winRegistry.notes[noteId].focus();return winRegistry.notes[noteId]}
   const{width:sw}=screen.getPrimaryDisplay().workAreaSize;
   const saved=windowBounds[noteId];
   const defX=Math.min(420+60,sw-290),defY=40+Object.keys(winRegistry.notes).length*20;
@@ -577,7 +803,7 @@ function createNoteWindow(noteId,isNew,placement,initialOptions){
     if(Number.isFinite(placement.width)) opts.width=Math.round(placement.width);
     if(Number.isFinite(placement.height)) opts.height=Math.round(placement.height);
   }
-  const w=createWidget(opts);
+  const w=createWidget(sanitizeWindowBounds(opts, { width: 270, height: 340, x: defX, y: defY }));
   const hash = isNew ? `/note/${noteId}/new` : `/note/${noteId}`;
   w.loadURL(makeWidgetURL(hash));
   w.on('move', debouncedSaveWindowBounds);
@@ -698,10 +924,337 @@ function loadEventsSnapshot(){
   return Array.isArray(events)?events:[];
 }
 
+const REMINDER_POLL_MS = 5 * 1000;
+const REMINDER_LATE_GRACE_MS = 30 * 60 * 1000;
+const REMINDER_STATE_FILE = 'reminder-state.json';
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+let reminderTimer = null;
+let reminderState = { fired: {} };
+let reminderToastSeq = 0;
+const reminderToastWins = new Map();
+const REMINDER_TOAST_WIDTH = 438;
+const REMINDER_TOAST_HEIGHT = 154;
+const REMINDER_TOAST_MARGIN = 22;
+const REMINDER_TOAST_GAP = 12;
+
+function isDateKey(value) {
+  return typeof value === 'string' && DATE_KEY_RE.test(value);
+}
+function dateKeyToUtcDay(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / DAY_MS);
+}
+function formatUtcDateKey(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+function addDaysKey(dateStr, days) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatUtcDateKey(date);
+}
+function diffDateKeys(startDate, endDate) {
+  return dateKeyToUtcDay(endDate) - dateKeyToUtcDay(startDate);
+}
+function weekdayFromKey(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year, month - 1, day).getDay();
+}
+function startOfWeekKey(dateStr) {
+  const weekday = weekdayFromKey(dateStr);
+  return addDaysKey(dateStr, weekday === 0 ? -6 : 1 - weekday);
+}
+function monthDistance(startDate, endDate) {
+  const [startYear, startMonth] = startDate.split('-').map(Number);
+  const [endYear, endMonth] = endDate.split('-').map(Number);
+  return (endYear - startYear) * 12 + (endMonth - startMonth);
+}
+function yearDistance(startDate, endDate) {
+  return Number(endDate.slice(0, 4)) - Number(startDate.slice(0, 4));
+}
+function eventDurationDays(event) {
+  if (!event.endDate || event.endDate === event.startDate) return 0;
+  return Math.max(0, diffDateKeys(event.startDate, event.endDate));
+}
+function eventRangeIntersects(startDate, endDate, rangeStart, rangeEnd) {
+  return endDate >= rangeStart && startDate <= rangeEnd;
+}
+function recurrenceMatchesDate(event, dateStr) {
+  const recurrence = event.recurrence;
+  if (!recurrence || dateStr < event.startDate) return false;
+  if (recurrence.until && dateStr > recurrence.until) return false;
+  const interval = Math.max(1, Math.floor(recurrence.interval || 1));
+
+  if (recurrence.freq === 'daily') {
+    return diffDateKeys(event.startDate, dateStr) % interval === 0;
+  }
+  if (recurrence.freq === 'weekly') {
+    const weekdays = Array.isArray(recurrence.byWeekday) && recurrence.byWeekday.length > 0
+      ? recurrence.byWeekday
+      : [weekdayFromKey(event.startDate)];
+    if (!weekdays.includes(weekdayFromKey(dateStr))) return false;
+    const weeks = Math.floor(diffDateKeys(startOfWeekKey(event.startDate), startOfWeekKey(dateStr)) / 7);
+    return weeks >= 0 && weeks % interval === 0;
+  }
+  if (recurrence.freq === 'monthly') {
+    const days = Array.isArray(recurrence.byMonthDay) && recurrence.byMonthDay.length > 0
+      ? recurrence.byMonthDay
+      : [Number(event.startDate.slice(8, 10))];
+    if (!days.includes(Number(dateStr.slice(8, 10)))) return false;
+    const months = monthDistance(event.startDate, dateStr);
+    return months >= 0 && months % interval === 0;
+  }
+  const years = yearDistance(event.startDate, dateStr);
+  return dateStr.slice(5) === event.startDate.slice(5) && years >= 0 && years % interval === 0;
+}
+function expandEventsInRangeMain(events, rangeStart, rangeEnd) {
+  if (!isDateKey(rangeStart) || !isDateKey(rangeEnd) || rangeEnd < rangeStart) return [];
+  const expanded = [];
+  for (const event of events) {
+    if (!event || typeof event !== 'object' || !isDateKey(event.startDate)) continue;
+    const durationDays = eventDurationDays(event);
+    if (!event.recurrence) {
+      const endDate = event.endDate || event.startDate;
+      if (eventRangeIntersects(event.startDate, endDate, rangeStart, rangeEnd)) expanded.push(event);
+      continue;
+    }
+    const rangeCandidate = addDaysKey(rangeStart, -durationDays);
+    const firstCandidate = event.startDate > rangeCandidate ? event.startDate : rangeCandidate;
+    const totalDays = Math.min(Math.max(0, diffDateKeys(firstCandidate, rangeEnd)) + 1, 3660);
+    for (let i = 0; i < totalDays; i += 1) {
+      const occurrenceStart = addDaysKey(firstCandidate, i);
+      if (!recurrenceMatchesDate(event, occurrenceStart)) continue;
+      const occurrenceEnd = addDaysKey(occurrenceStart, durationDays);
+      if (!eventRangeIntersects(occurrenceStart, occurrenceEnd, rangeStart, rangeEnd)) continue;
+      expanded.push({
+        ...event,
+        startDate: occurrenceStart,
+        endDate: durationDays > 0 ? occurrenceEnd : undefined,
+        seriesId: event.id,
+        occurrenceDate: occurrenceStart,
+        occurrenceKey: `${event.id}__${occurrenceStart}`,
+      });
+    }
+  }
+  return expanded;
+}
+function loadReminderState() {
+  const raw = loadAppData(REMINDER_STATE_FILE);
+  reminderState = raw && typeof raw === 'object' && raw.fired && typeof raw.fired === 'object'
+    ? { fired: raw.fired }
+    : { fired: {} };
+}
+function saveReminderState() {
+  saveAppData(REMINDER_STATE_FILE, reminderState);
+}
+function cleanupReminderState() {
+  const cutoff = Date.now() - 30 * DAY_MS;
+  let changed = false;
+  for (const [key, value] of Object.entries(reminderState.fired || {})) {
+    const ts = Date.parse(value);
+    if (!Number.isFinite(ts) || ts < cutoff) {
+      delete reminderState.fired[key];
+      changed = true;
+    }
+  }
+  if (changed) saveReminderState();
+}
+function eventStartMillis(event) {
+  const time = event.startTime || '09:00';
+  const ms = new Date(`${event.startDate}T${time}:00`).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+function createReminderToastHtml(event, playSound) {
+  const timeLabel = event.isAllDay ? '全天' : (event.startTime || '09:00');
+  const title = escapeHtml(event.title || '未命名事件');
+  const body = escapeHtml(`${event.startDate} ${timeLabel}`);
+  const shouldPlaySound = playSound ? 'true' : 'false';
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;width:100%;height:100%;background:rgba(0,0,0,0)!important;overflow:hidden;font-family:"Microsoft YaHei",Segoe UI,system-ui,sans-serif;color:#111827;}
+    body{box-sizing:border-box;padding:12px;}
+    .toast{box-sizing:border-box;position:relative;width:100%;height:100%;border-radius:22px;background:linear-gradient(145deg,rgba(255,255,255,.76),rgba(244,247,251,.68) 48%,rgba(226,232,240,.58));border:1px solid rgba(255,255,255,.62);box-shadow:0 18px 50px rgba(15,23,42,.24),0 1px 0 rgba(255,255,255,.86) inset,0 -1px 0 rgba(15,23,42,.035) inset,0 0 0 1px rgba(15,23,42,.052) inset;overflow:hidden;clip-path:inset(0 round 22px);animation:reminder-in .22s cubic-bezier(.16,1,.3,1),reminder-glow 1.25s ease-in-out .18s 2;}
+    .toast::before{content:"";position:absolute;inset:0;border-radius:inherit;background:radial-gradient(circle at 16% 0%,rgba(255,255,255,.78),transparent 40%),radial-gradient(circle at 82% 110%,rgba(148,163,184,.18),transparent 42%),linear-gradient(120deg,rgba(255,255,255,.32),transparent 44%);pointer-events:none;}
+    .toast::after{content:"";position:absolute;inset:.5px;border-radius:21px;border:1px solid rgba(255,255,255,.38);background-image:radial-gradient(rgba(15,23,42,.045) .45px,transparent .45px);background-size:4px 4px;opacity:.28;pointer-events:none;}
+    .body{position:relative;z-index:1;display:grid;grid-template-columns:42px minmax(0,1fr);grid-template-rows:auto auto;column-gap:12px;row-gap:9px;padding:16px 17px 14px;}
+    .icon{grid-row:1 / 3;width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,rgba(249,250,251,.86),rgba(203,213,225,.58));border:1px solid rgba(255,255,255,.72);display:flex;align-items:center;justify-content:center;flex:none;color:#2563eb;font-size:20px;font-weight:800;box-shadow:0 8px 22px rgba(15,23,42,.12),0 1px 0 rgba(255,255,255,.85) inset;}
+    .icon-dot{width:12px;height:12px;border-radius:999px;background:#3b82f6;box-shadow:0 0 0 5px rgba(59,130,246,.13),0 0 18px rgba(59,130,246,.36);}
+    .content{min-width:0;}
+    .eyebrow{font-size:11px;color:rgba(15,23,42,.52);margin-bottom:3px;font-weight:700;}
+    .title{font-size:18px;line-height:1.18;font-weight:760;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827;}
+    .time{font-size:12.5px;color:rgba(30,41,59,.64);margin-top:4px;font-weight:550;}
+    .actions{display:flex;justify-content:flex-end;align-items:end;align-self:end;}
+    button{font:inherit;border:0;color:#0f172a;border-radius:999px;padding:6px 13px;font-size:13px;background:rgba(255,255,255,.54);cursor:pointer;font-weight:720;box-shadow:0 1px 0 rgba(255,255,255,.78) inset,0 0 0 1px rgba(15,23,42,.08),0 8px 20px rgba(15,23,42,.10);}
+    button:hover{background:rgba(255,255,255,.72);}
+    button:active{transform:translateY(1px);background:rgba(226,232,240,.74);}
+    @keyframes reminder-in{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+    @keyframes reminder-glow{0%,100%{box-shadow:0 18px 50px rgba(15,23,42,.24),0 1px 0 rgba(255,255,255,.86) inset,0 0 0 1px rgba(15,23,42,.052) inset}50%{box-shadow:0 20px 56px rgba(15,23,42,.29),0 1px 0 rgba(255,255,255,.90) inset,0 0 0 1px rgba(59,130,246,.14) inset,0 0 0 4px rgba(59,130,246,.08)}}
+  </style></head><body><div class="toast"><div class="body"><div class="icon"><span class="icon-dot"></span></div><div class="content"><div class="eyebrow">OKNote 提醒</div><div class="title">${title}</div><div class="time">${body}</div></div><div class="actions"><button id="dismiss" type="button">知道了</button></div></div></div><script>
+    (() => {
+      const dismiss = () => {
+        if (window.electronAPI && window.electronAPI.dismissReminderToast) {
+          window.electronAPI.dismissReminderToast();
+        }
+        setTimeout(() => window.close(), 80);
+      };
+      document.getElementById('dismiss')?.addEventListener('click', dismiss);
+      if (!${shouldPlaySound}) return;
+      const play = () => {
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return;
+          const ctx = new AudioCtx();
+          const master = ctx.createGain();
+          master.gain.setValueAtTime(0.0001, ctx.currentTime);
+          master.gain.exponentialRampToValueAtTime(0.64, ctx.currentTime + 0.025);
+          master.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.62);
+          master.connect(ctx.destination);
+
+          const start = ctx.currentTime + 0.04;
+          for (const [freq, type, level] of [[740, 'sine', 1.0], [1480, 'triangle', 0.30]]) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, start);
+            gain.gain.setValueAtTime(level, start);
+            osc.connect(gain);
+            gain.connect(master);
+            osc.start(start);
+            osc.stop(start + 0.52);
+          }
+
+          if (ctx.resume) ctx.resume().catch(() => {});
+          setTimeout(() => ctx.close().catch(() => {}), 900);
+        } catch {}
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(play, 70), { once: true });
+      } else {
+        setTimeout(play, 70);
+      }
+    })();
+  </script></body></html>`;
+}
+function getReminderToastBounds(index) {
+  const { workArea } = screen.getPrimaryDisplay();
+  return {
+    x: Math.round(workArea.x + workArea.width - REMINDER_TOAST_WIDTH - REMINDER_TOAST_MARGIN),
+    y: Math.round(Math.max(
+      workArea.y + REMINDER_TOAST_MARGIN,
+      workArea.y + workArea.height - REMINDER_TOAST_HEIGHT - REMINDER_TOAST_MARGIN - index * (REMINDER_TOAST_HEIGHT + REMINDER_TOAST_GAP)
+    )),
+    width: REMINDER_TOAST_WIDTH,
+    height: REMINDER_TOAST_HEIGHT,
+  };
+}
+function repositionReminderToasts() {
+  let index = 0;
+  for (const win of reminderToastWins.values()) {
+    if (!win || win.isDestroyed()) continue;
+    win.setBounds(getReminderToastBounds(index));
+    index += 1;
+  }
+}
+function pulseReminderAttention() {
+  const cal = winRegistry.calendar;
+  if (cal && !cal.isDestroyed()) {
+    try {
+      cal.flashFrame(true);
+      setTimeout(() => { if (!cal.isDestroyed()) cal.flashFrame(false); }, 10000);
+    } catch {}
+  }
+}
+function showReminderToast(event) {
+  const token = `reminder_${Date.now()}_${++reminderToastSeq}`;
+  const index = reminderToastWins.size;
+  const toast = new BrowserWindow({
+    ...getReminderToastBounds(index),
+    frame: false,
+    transparent: true,
+    skipTaskbar: true,
+    show: false,
+    focusable: true,
+    resizable: false,
+    hasShadow: false,
+    alwaysOnTop: true,
+    backgroundColor: '#00000000',
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
+  });
+  toast.setAlwaysOnTop(true, 'screen-saver', 1);
+  toast.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(createReminderToastHtml(event, !!(event.reminder && event.reminder.playSound)))}`);
+  toast.showInactive();
+  toast.moveTop();
+  pulseReminderAttention();
+  reminderToastWins.set(token, toast);
+  const closeTimer = setTimeout(() => {
+    if (!toast.isDestroyed()) toast.close();
+  }, 30000);
+  toast.on('closed', () => {
+    clearTimeout(closeTimer);
+    reminderToastWins.delete(token);
+    repositionReminderToasts();
+  });
+  return true;
+}
+function fireEventReminder(event) {
+  showReminderToast(event);
+  return true;
+}
+function checkEventReminders() {
+  try {
+    const events = loadEventsSnapshot();
+    if (events.length === 0) return;
+    const nowMs = Date.now();
+    const today = todayDateKey();
+    const maxBefore = events.reduce((max, event) => {
+      const reminder = event && event.reminder;
+      return reminder && reminder.enabled ? Math.max(max, Number(reminder.minutesBefore) || 0) : max;
+    }, 0);
+    const rangeStart = addDaysKey(today, -2);
+    const rangeEnd = addDaysKey(today, Math.max(8, Math.ceil(maxBefore / 1440) + 2));
+    const expanded = expandEventsInRangeMain(events, rangeStart, rangeEnd);
+    let changed = false;
+
+    for (const event of expanded) {
+      const reminder = event.reminder;
+      if (!reminder || reminder.enabled !== true) continue;
+      const startMs = eventStartMillis(event);
+      if (startMs == null) continue;
+      const minutesBefore = Math.max(0, Number(reminder.minutesBefore) || 0);
+      const reminderMs = startMs - minutesBefore * 60 * 1000;
+      if (reminderMs > nowMs) continue;
+      if (startMs < nowMs - REMINDER_LATE_GRACE_MS) continue;
+      const key = `${event.seriesId || event.id}|${event.startDate}|${event.startTime || 'all-day'}|${minutesBefore}|${event.updatedAt || ''}`;
+      if (reminderState.fired[key]) continue;
+      if (fireEventReminder(event)) {
+        reminderState.fired[key] = new Date().toISOString();
+        changed = true;
+      }
+    }
+
+    if (changed) saveReminderState();
+    cleanupReminderState();
+  } catch (e) {
+    console.error('checkEventReminders failed:', e.message);
+  }
+}
+function startReminderScheduler() {
+  loadReminderState();
+  if (reminderTimer) clearInterval(reminderTimer);
+  checkEventReminders();
+  reminderTimer = setInterval(checkEventReminders, REMINDER_POLL_MS);
+}
+function stopReminderScheduler() {
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = null;
+}
+
 function broadcastEventsChanged(data={}){
   const payload={action:'events-changed',events:loadEventsSnapshot(),...data};
   const wins=[winRegistry.calendar,...Object.values(winRegistry.notes)];
   wins.forEach(w=>{if(w&&!w.isDestroyed()) w.webContents.send('events-changed',payload)});
+  setTimeout(()=>checkEventReminders(),500);
 }
 
 // ── IPC ──
@@ -766,7 +1319,14 @@ function setupIPC(){
       w.hide();
     }
   });
-  ipcMain.on('create-note',(_e,options)=>{createNoteWindow(null,true,undefined,options&&typeof options==='object'?options:{})});
+  ipcMain.on('create-note',(_e,options)=>{
+    const safeOptions=options&&typeof options==='object'?options:{};
+    if(safeOptions.noteType==='daily'){
+      openDailyNoteWindow();
+      return;
+    }
+    createNoteWindow(null,true,undefined,safeOptions);
+  });
   ipcMain.on('delete-note',(_e,noteId)=>{
     if(typeof noteId!=='string'||!noteId.trim()) return;
     const fp=path.join(DATA_DIR,`note_${noteId}.json`);
@@ -779,6 +1339,10 @@ function setupIPC(){
   });
   ipcMain.on('open-settings',()=>{createSettingsWindow()});
   ipcMain.on('tidy-notes',()=>{tidyAllNotes()});
+  ipcMain.on('dismiss-reminder-toast',(event)=>{
+    const win=BrowserWindow.fromWebContents(event.sender);
+    if(win&&!win.isDestroyed()) win.close();
+  });
   ipcMain.on('show-day-context-menu',(event,dateStr,screenX,screenY)=>{
     const win=BrowserWindow.fromWebContents(event.sender);
     if(!win||win.isDestroyed()||typeof dateStr!=='string') return;
@@ -802,6 +1366,10 @@ function setupIPC(){
         saveNoteData(noteId,{...note,isDocked:true,isHidden:false});
         showCalendar();
         notifyNotesChanged();
+        setTimeout(()=>{
+          const cal=winRegistry.calendar;
+          if(cal&&!cal.isDestroyed()) cal.webContents.send('focus-note',{noteId,noteType:note.noteType||'independent'});
+        },120);
         return;
       }
       saveNoteData(noteId,{...(note||{}),isHidden:false});
@@ -998,11 +1566,13 @@ function setupIPC(){
 
 // ── App ──
 app.whenReady().then(()=>{
+  if(process.platform==='win32') app.setAppUserModelId('com.oknote.app');
   Menu.setApplicationMenu(null);
   ensureDataDir();
   loadSettings();loadWindowBounds();setupIPC();createTray();
   createCalendarWindow();
   app.setLoginItemSettings({ openAtLogin: appSettings.autoLaunch });
+  startReminderScheduler();
   // Start async font loading in background (non-blocking)
   loadSystemFontsAsync();
 });
@@ -1010,6 +1580,7 @@ app.on('window-all-closed',()=>{});
 app.on('before-quit',()=>{
   app.isQuitting=true;
   clearTimeout(boundsSaveTimer);
+  stopReminderScheduler();
   saveWindowBounds();
   // Kill lingering Vite dev server on port 5199 (dev mode only)
   if(isDev){

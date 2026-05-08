@@ -32,17 +32,19 @@ export interface ElectronAPI {
 
   onAction: (callback: (action: string) => void) => () => void;
 
-  createNote: (options?: { noteType?: 'independent' | 'echo'; echoTagId?: string; title?: string; color?: string }) => void;
+  createNote: (options?: { noteType?: 'independent' | 'echo' | 'daily'; echoTagId?: string; title?: string; color?: string }) => void;
   deleteNote: (noteId: string) => void;
   showNote: (noteId: string) => void;
   getVisibleNoteIds: () => Promise<string[]>;
   openSettings: () => void;
   tidyNotes: () => void;
+  dismissReminderToast: () => void;
   setAutoLaunch: (enabled: boolean) => void;
   showDayContextMenu: (dateStr: string, screenX: number, screenY: number) => void;
   openEventEditor: (eventData: unknown) => void;
   onOpenEventEditor: (callback: (eventData: unknown) => void) => () => void;
   onDayContextAction: (callback: (payload: { dateStr: string; mode: 'single' | 'multi' }) => void) => () => void;
+  onFocusNote: (callback: (payload: { noteId: string; noteType?: string }) => void) => () => void;
 
   // Data persistence
   saveAppData: (key: string, data: unknown) => Promise<boolean>;

@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getVisibleNoteIds: () => ipcRenderer.invoke('get-visible-note-ids'),
   openSettings: () => ipcRenderer.send('open-settings'),
   tidyNotes: () => ipcRenderer.send('tidy-notes'),
+  dismissReminderToast: () => ipcRenderer.send('dismiss-reminder-toast'),
   setAutoLaunch: (enabled) => ipcRenderer.send('set-auto-launch', enabled),
   showDayContextMenu: (dateStr, screenX, screenY) => ipcRenderer.send('show-day-context-menu', dateStr, screenX, screenY),
   openEventEditor: (eventData) => ipcRenderer.send('open-event-editor', eventData),
@@ -47,6 +48,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('day-context-action', handler);
     return () => ipcRenderer.removeListener('day-context-action', handler);
+  },
+  onFocusNote: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('focus-note', handler);
+    return () => ipcRenderer.removeListener('focus-note', handler);
   },
 
   // ── Data persistence ──
