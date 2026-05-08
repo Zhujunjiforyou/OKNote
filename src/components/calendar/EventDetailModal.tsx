@@ -2,8 +2,26 @@ import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { X, Pencil, Trash2, Clock, MapPin, Tag } from 'lucide-react'
+import { X, Pencil, Trash2, Clock, MapPin, Tag, Repeat, Bell } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import type { CalendarEvent } from '@/types/calendar.types'
+
+function recurrenceLabel(event: CalendarEvent): string {
+  const recurrence = event.recurrence
+  if (!recurrence) return ''
+  const intervalText = recurrence.interval > 1 ? `每 ${recurrence.interval} ` : '每'
+  if (recurrence.freq === 'daily') return `${intervalText}天`
+  if (recurrence.freq === 'weekly') return `${intervalText}周`
+  if (recurrence.freq === 'monthly') return `${intervalText}月`
+  return `${intervalText}年`
+}
+
+function reminderLabel(minutes: number): string {
+  if (minutes <= 0) return '准时提醒'
+  if (minutes % 1440 === 0) return `提前 ${minutes / 1440} 天`
+  if (minutes % 60 === 0) return `提前 ${minutes / 60} 小时`
+  return `提前 ${minutes} 分钟`
+}
 
 export function EventDetailModal() {
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
@@ -68,6 +86,20 @@ export function EventDetailModal() {
                       {event.isAllDay && ' (全天)'}
                     </span>
                   </div>
+
+                  {event.recurrence && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Repeat size={14} />
+                      <span>{recurrenceLabel(event)}循环{event.recurrence.until ? `，至 ${event.recurrence.until}` : ''}</span>
+                    </div>
+                  )}
+
+                  {event.reminder?.enabled && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Bell size={14} />
+                      <span>{reminderLabel(event.reminder.minutesBefore)}{event.reminder.playSound ? '，带提示音' : ''}</span>
+                    </div>
+                  )}
 
                   {/* Description */}
                   {event.description && (

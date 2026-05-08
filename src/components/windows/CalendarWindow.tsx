@@ -13,7 +13,7 @@ import { EventForm } from '@/components/calendar/EventForm'
 import { EventDetailModal } from '@/components/calendar/EventDetailModal'
 import { DayEventsModal } from '@/components/calendar/DayEventsModal'
 import { DockArea } from '@/components/dock/DockArea'
-import { hexToLuminance, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { DEFAULT_NOTE_COLOR, hexToLuminance, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
 
 function noteIdFromDataFile(fileName: string): string {
   return fileName.replace(/\.json$/, '').replace(/^note_/, '')
@@ -32,11 +32,37 @@ const DOCK_HEIGHT_STORAGE_KEY = 'oknote.calendarDockHeight'
 const DEFAULT_DOCK_HEIGHT = 260
 const MIN_DOCK_HEIGHT = 150
 const MIN_CALENDAR_CONTENT_HEIGHT = 190
+const COMPACT_MIN_DOCK_HEIGHT = 118
+const COMPACT_MIN_CALENDAR_CONTENT_HEIGHT = 170
+
+function getViewportSize() {
+  if (typeof window === 'undefined') return { width: 900, height: 760 }
+  return { width: window.innerWidth, height: window.innerHeight }
+}
+
+function getCalendarDensity(width: number, height: number): number {
+  const widthScale = width < 520 ? 0.78 : width < 700 ? 0.86 : width < 900 ? 0.93 : 1
+  const heightScale = height < 560 ? 0.78 : height < 700 ? 0.86 : height < 850 ? 0.94 : 1
+  return Math.min(widthScale, heightScale)
+}
+
+function getDockHeightLimits(viewportHeight: number) {
+  const compact = viewportHeight < 650
+  const min = compact ? COMPACT_MIN_DOCK_HEIGHT : MIN_DOCK_HEIGHT
+  const minCalendar = compact ? COMPACT_MIN_CALENDAR_CONTENT_HEIGHT : MIN_CALENDAR_CONTENT_HEIGHT
+  const ratioMax = Math.round(viewportHeight * (compact ? 0.34 : 0.42))
+  return {
+    min,
+    max: Math.max(min, Math.min(460, viewportHeight - minCalendar, ratioMax)),
+  }
+}
 
 function getInitialDockHeight(): number {
   if (typeof window === 'undefined') return DEFAULT_DOCK_HEIGHT
   const saved = Number(window.localStorage.getItem(DOCK_HEIGHT_STORAGE_KEY))
-  return Number.isFinite(saved) ? Math.min(460, Math.max(MIN_DOCK_HEIGHT, saved)) : DEFAULT_DOCK_HEIGHT
+  const limits = getDockHeightLimits(window.innerHeight)
+  const value = Number.isFinite(saved) ? saved : DEFAULT_DOCK_HEIGHT
+  return Math.round(Math.min(limits.max, Math.max(limits.min, value)))
 }
 
 function isDefaultTextColor(value: string): boolean {
@@ -77,17 +103,29 @@ export function CalendarWindow() {
   const [calendarCollapsed, setCalendarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month')
   const [dockHeight, setDockHeight] = useState(getInitialDockHeight)
+  const [visibleTitleActions, setVisibleTitleActions] = useState(3)
+  const [viewportSize, setViewportSize] = useState(getViewportSize)
   const didRestoreRef = useRef(false)
+  const titlebarRef = useRef<HTMLDivElement>(null)
+  const monthNavRef = useRef<HTMLDivElement>(null)
+  const measureTodayActionRef = useRef<HTMLButtonElement>(null)
+  const measureEventActionRef = useRef<HTMLButtonElement>(null)
+  const measureNoteActionRef = useRef<HTMLButtonElement>(null)
   const noteCreateMenuRef = useRef<HTMLDivElement>(null)
   const dockHeightRef = useRef(dockHeight)
+  const preferredDockHeightRef = useRef(dockHeight)
   const calendarCollapsedRef = useRef(false)
   const dockResizeRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null)
   const tags = useTagStore((s) => s.tags)
 
+  const calendarDensity = getCalendarDensity(viewportSize.width, viewportSize.height)
+  const effectiveFontSize = Math.max(11, Math.round(settings.fontSize * calendarDensity * 10) / 10)
+  const isCompactDensity = calendarDensity < 0.93
+
   useEffect(() => {
-    document.documentElement.style.fontSize = settings.fontSize + 'px'
+    document.documentElement.style.fontSize = `${effectiveFontSize}px`
     return () => { document.documentElement.style.fontSize = '' }
-  }, [settings.fontSize])
+  }, [effectiveFontSize])
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', themeMode === 'light')
@@ -115,6 +153,63 @@ export function CalendarWindow() {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [showNoteCreateMenu])
+
+  useEffect(() => {
+    const updateTitleActions = () => {
+      const titlebar = titlebarRef.current
+      const monthNav = monthNavRef.current
+      if (!titlebar || !monthNav) return
+
+      const titlebarRect = titlebar.getBoundingClientRect()
+      const monthRect = monthNav.getBoundingClientRect()
+      const paddingLeft = Number.parseFloat(window.getComputedStyle(titlebar).paddingLeft) || 0
+      const leftAvailable = Math.max(0, monthRect.left - titlebarRect.left - paddingLeft - 2)
+      const gap = 4
+      const widths = [
+        measureTodayActionRef.current?.getBoundingClientRect().width || 52,
+        measureEventActionRef.current?.getBoundingClientRect().width || 66,
+        measureNoteActionRef.current?.getBoundingClientRect().width || 66,
+      ].map(Math.ceil)
+      const required = (count: number) => (
+        widths.slice(0, count).reduce((sum, width) => sum + width, 0) + Math.max(0, count - 1) * gap
+      )
+      const showBuffer = 10
+
+      setVisibleTitleActions((current) => {
+        let next = current
+        while (next > 0 && required(next) > leftAvailable) next -= 1
+        while (next < 3 && required(next + 1) <= leftAvailable - showBuffer) next += 1
+        return current === next ? current : next
+      })
+    }
+
+    let frame = 0
+    const scheduleTitleActionsUpdate = () => {
+      if (frame) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        updateTitleActions()
+      })
+    }
+
+    scheduleTitleActionsUpdate()
+    const observer = new ResizeObserver(scheduleTitleActionsUpdate)
+    if (titlebarRef.current) observer.observe(titlebarRef.current)
+    if (monthNavRef.current) observer.observe(monthNavRef.current)
+    window.addEventListener('resize', scheduleTitleActionsUpdate)
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      observer.disconnect()
+      window.removeEventListener('resize', scheduleTitleActionsUpdate)
+    }
+  }, [effectiveFontSize, viewMode])
+
+  useEffect(() => {
+    const updateViewportSize = () => setViewportSize(getViewportSize())
+    updateViewportSize()
+    window.addEventListener('resize', updateViewportSize)
+    return () => window.removeEventListener('resize', updateViewportSize)
+  }, [])
 
   useEffect(() => {
     if (window.electronAPI?.isElectron) {
@@ -256,7 +351,7 @@ export function CalendarWindow() {
         const viewNote: Note = {
           id: 'note_view_default',
           title: '视图',
-          color: '#6366f1',
+          color: DEFAULT_NOTE_COLOR,
           items: [],
           transparency: 0.88,
           fontFamily: settings.fontFamily,
@@ -332,8 +427,8 @@ export function CalendarWindow() {
     useCalendarStore.getState().setCurrentDate(next)
   }
   const clampDockHeight = (height: number) => {
-    const maxDockHeight = Math.max(MIN_DOCK_HEIGHT, window.innerHeight - MIN_CALENDAR_CONTENT_HEIGHT)
-    return Math.round(Math.min(maxDockHeight, Math.max(MIN_DOCK_HEIGHT, height)))
+    const limits = getDockHeightLimits(window.innerHeight)
+    return Math.round(Math.min(limits.max, Math.max(limits.min, height)))
   }
   const handleDockResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -350,6 +445,7 @@ export function CalendarWindow() {
     if (!drag || drag.pointerId !== event.pointerId) return
     const nextHeight = clampDockHeight(drag.startHeight - (event.clientY - drag.startY))
     dockHeightRef.current = nextHeight
+    preferredDockHeightRef.current = nextHeight
     setDockHeight(nextHeight)
   }
   const finishDockResize = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -358,25 +454,23 @@ export function CalendarWindow() {
     dockResizeRef.current = null
     document.body.classList.remove('resizing-dock')
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(dockHeightRef.current))
+    window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(preferredDockHeightRef.current))
   }
 
   useEffect(() => {
     dockHeightRef.current = dockHeight
-    if (!calendarCollapsedRef.current && window.innerHeight > MIN_CALENDAR_CONTENT_HEIGHT + MIN_DOCK_HEIGHT) {
-      window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(dockHeight))
-    }
   }, [dockHeight])
 
   useEffect(() => {
     const handleResize = () => {
-      if (calendarCollapsedRef.current || window.innerHeight <= MIN_CALENDAR_CONTENT_HEIGHT + MIN_DOCK_HEIGHT) return
-      setDockHeight((height) => {
-        const next = clampDockHeight(height)
+      if (calendarCollapsedRef.current) return
+      setDockHeight(() => {
+        const next = clampDockHeight(preferredDockHeightRef.current)
         dockHeightRef.current = next
         return next
       })
     }
+    handleResize()
     window.addEventListener('resize', handleResize)
     return () => {
       window.removeEventListener('resize', handleResize)
@@ -386,48 +480,63 @@ export function CalendarWindow() {
 
   return (
     <div
-      className={`calendar-window relative h-screen w-screen flex flex-col select-none ${calendarCollapsed ? 'calendar-collapsed' : ''}`}
+      className={`calendar-window relative h-screen w-screen flex flex-col select-none ${calendarCollapsed ? 'calendar-collapsed' : ''} ${isCompactDensity ? 'calendar-density-compact' : ''}`}
       style={{
         fontFamily: `"${settings.fontFamily}", system-ui, sans-serif`,
         color: calendarTextColor,
         ['--calendar-text' as string]: calendarTextColor,
         ['--calendar-text-shadow' as string]: calendarTextShadow,
+        ['--calendar-density' as string]: calendarDensity,
       }}
     >
       {/* Background overlay */}
-      <div className="absolute inset-0 z-0" style={{ backgroundColor: bgWithAlpha }} />
+      <div className="cal-window-bg absolute inset-0 z-0" style={{ backgroundColor: bgWithAlpha }} />
 
       {/* Title bar */}
       <div
-        className="cal-titlebar relative z-[60] flex items-center justify-between px-4 py-2.5 shrink-0 border-b"
+        ref={titlebarRef}
+        className="cal-titlebar relative z-[60] items-center px-4 py-2.5 shrink-0 border-b"
         style={{ WebkitAppRegion: 'drag', borderColor: `${calendarTextColor}18` } as React.CSSProperties}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
       >
+        <div className="cal-left-actions-measure" aria-hidden="true">
+          <button ref={measureTodayActionRef} className="cal-action cal-action-today px-2.5 py-1 text-[0.8em] rounded-md border">
+            <span className="cal-action-label">今天</span>
+          </button>
+          <button ref={measureEventActionRef} className="cal-action cal-action-event px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
+            <Plus size={11} />
+            <span className="cal-action-label">事件</span>
+          </button>
+          <button ref={measureNoteActionRef} className="cal-action cal-action-note px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
+            <Plus size={11} />
+            <span className="cal-action-label">便签</span>
+          </button>
+        </div>
         {/* Left: actions */}
         <div className="cal-left-actions flex items-center gap-1 calendar-text-readable" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button
             onClick={goToday}
-            className="px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border"
+            className={`cal-action cal-action-today px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border ${visibleTitleActions >= 1 ? '' : 'cal-action-hidden'}`}
             style={{ borderColor: `${calendarTextColor}18` }}
           >
-            今天
+            <span className="cal-action-label">今天</span>
           </button>
           <button
             onClick={() => { setMultiDayMode(false); openEventForm(null) }}
-            className="px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1"
+            className={`cal-action cal-action-event px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1 ${visibleTitleActions >= 2 ? '' : 'cal-action-hidden'}`}
             style={{ borderColor: `${calendarTextColor}18` }}
           >
             <Plus size={11} />
-            事件
+            <span className="cal-action-label">事件</span>
           </button>
           <div ref={noteCreateMenuRef} className="relative">
             <button
               onClick={() => setShowNoteCreateMenu((open) => !open)}
-              className="px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1"
+              className={`cal-action cal-action-note px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1 ${visibleTitleActions >= 3 ? '' : 'cal-action-hidden'}`}
               style={{ borderColor: `${calendarTextColor}18` }}
             >
               <Plus size={11} />
-              便签
+              <span className="cal-action-label">便签</span>
             </button>
             {showNoteCreateMenu && (
               <div
@@ -449,6 +558,16 @@ export function CalendarWindow() {
                 >
                   <div className="font-medium opacity-80">独立便签</div>
                   <div className="mt-0.5 text-[0.85em] opacity-35">待办与自由记录</div>
+                </button>
+                <button
+                  onClick={() => {
+                    window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办' })
+                    setShowNoteCreateMenu(false)
+                  }}
+                  className="w-full rounded-lg px-2.5 py-2 text-left text-xs hover:bg-white/10 transition-colors"
+                >
+                  <div className="font-medium opacity-80">每日待办</div>
+                  <div className="mt-0.5 text-[0.85em] opacity-35">按日期查看历史待办</div>
                 </button>
                 <div className="my-1 border-t" style={{ borderColor: `${calendarTextColor}18` }} />
                 <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest opacity-30">视图便签</div>
@@ -478,7 +597,8 @@ export function CalendarWindow() {
 
         {/* Center: navigation arrows + month title + picker */}
         <div
-          className="absolute left-1/2 -translate-x-1/2 z-[70] flex items-center gap-1"
+          ref={monthNavRef}
+          className="cal-month-nav relative z-[70] flex items-center gap-1"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
         >
@@ -543,6 +663,7 @@ export function CalendarWindow() {
                         key={y}
                         onClick={() => {
                           const newDate = new Date(currentDate)
+                          newDate.setDate(1)
                           newDate.setFullYear(y)
                           useCalendarStore.getState().setCurrentDate(newDate)
                         }}
@@ -567,6 +688,7 @@ export function CalendarWindow() {
                         key={m}
                         onClick={() => {
                           const newDate = new Date(currentDate)
+                          newDate.setDate(1)
                           newDate.setMonth(m - 1)
                           useCalendarStore.getState().setCurrentDate(newDate)
                         }}

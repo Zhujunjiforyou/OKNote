@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
+import { useNotesStore } from '@/stores/notes.store'
 import {
   startOfMonth,
   endOfMonth,
@@ -13,6 +14,7 @@ import {
 import { DayCell } from './DayCell'
 import { getHoliday } from '@/lib/holidays'
 import type { CalendarEvent } from '@/types/calendar.types'
+import { buildEventsByDate, getEventInstanceKey } from '@/lib/utils'
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
@@ -30,6 +32,7 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
+  const notes = useNotesStore((s) => s.notes)
 
   const days = useMemo(() => {
     if (viewMode === 'week') {
@@ -52,18 +55,28 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
     return result
   }, [days])
 
-  // Precompute event lookup by date string for O(1) access
+  const rangeStart = days.length > 0 ? format(days[0], 'yyyy-MM-dd') : ''
+  const rangeEnd = days.length > 0 ? format(days[days.length - 1], 'yyyy-MM-dd') : ''
+
+  // Expand recurring events only inside the visible grid and index by date.
   const eventsByDate = useMemo(() => {
-    const map = new Map<string, CalendarEvent[]>()
-    for (const e of events) {
-      if (!e.endDate || e.endDate === e.startDate) {
-        const arr = map.get(e.startDate) || []
-        arr.push(e)
-        map.set(e.startDate, arr)
+    if (!rangeStart || !rangeEnd) return new Map<string, CalendarEvent[]>()
+    return buildEventsByDate(events, rangeStart, rangeEnd)
+  }, [events, rangeStart, rangeEnd])
+
+  const dailyTodoCounts = useMemo(() => {
+    const map = new Map<string, number>()
+    if (!rangeStart || !rangeEnd) return map
+    for (const note of notes) {
+      if (note.noteType !== 'daily') continue
+      for (const item of note.items || []) {
+        if (!item.todoDate || item.isCompleted) continue
+        if (item.todoDate < rangeStart || item.todoDate > rangeEnd) continue
+        map.set(item.todoDate, (map.get(item.todoDate) || 0) + 1)
       }
     }
     return map
-  }, [events])
+  }, [notes, rangeStart, rangeEnd])
 
   // For each week, assign consistent row positions to multi-day events
   const weekEventRows = useMemo(() => {
@@ -74,11 +87,12 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
 
       week.forEach((day) => {
         const dateStr = format(day, 'yyyy-MM-dd')
-        for (const e of events) {
+        for (const e of eventsByDate.get(dateStr) || []) {
           const hasRange = e.endDate && e.endDate !== e.startDate
-          if (hasRange && dateStr >= e.startDate && dateStr <= e.endDate!) {
-            if (!multiDayEvents.find((m) => m.id === e.id)) {
-              multiDayEvents.push({ id: e.id, startDate: e.startDate, endDate: e.endDate! })
+          if (hasRange) {
+            const key = getEventInstanceKey(e)
+            if (!multiDayEvents.find((m) => m.id === key)) {
+              multiDayEvents.push({ id: key, startDate: e.startDate, endDate: e.endDate! })
             }
           }
         }
@@ -91,7 +105,7 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
       result.push(rowMap)
     }
     return result
-  }, [weeks, events])
+  }, [weeks, eventsByDate])
   const weekdayLabels = WEEKDAY_LABELS
 
   return (
@@ -123,26 +137,13 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
           return week.map((day, di) => {
             const dateStr = format(day, 'yyyy-MM-dd')
 
-            // Get single-day events from precomputed lookup
-            const singleDayEvents = eventsByDate.get(dateStr) || []
-
-            // Get multi-day events spanning this date
-            const multiDayEvents = events.filter((e) => {
-              const hasRange = e.endDate && e.endDate !== e.startDate
-              return hasRange && dateStr >= e.startDate && dateStr <= e.endDate!
-            })
-
-            // Combine: multi-day events first (by assigned row), then single-day
-            const sorted = [
-              ...multiDayEvents,
-              ...singleDayEvents,
-            ].sort((a, b) => {
+            const sorted = [...(eventsByDate.get(dateStr) || [])].sort((a, b) => {
               const aMulti = !!(a.endDate && a.endDate !== a.startDate)
               const bMulti = !!(b.endDate && b.endDate !== b.startDate)
               if (aMulti && !bMulti) return -1
               if (!aMulti && bMulti) return 1
               if (aMulti && bMulti) {
-                return (rowMap[a.id] ?? 99) - (rowMap[b.id] ?? 99)
+                return (rowMap[getEventInstanceKey(a)] ?? 99) - (rowMap[getEventInstanceKey(b)] ?? 99)
               }
               return 0
             })
@@ -153,6 +154,7 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
                 day={day}
                 dateStr={dateStr}
                 events={sorted}
+                dailyTodoCount={dailyTodoCounts.get(dateStr) || 0}
                 eventRows={rowMap}
                 isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
                 isToday={isToday(day)}

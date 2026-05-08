@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { CalendarEvent } from '@/types/calendar.types'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
-import { cn, hexToLuminance, normalizeHexColor } from '@/lib/utils'
+import { cn, getEventInstanceKey, hexToLuminance, normalizeHexColor } from '@/lib/utils'
 import { isHolidayLabelDay } from '@/lib/holidays'
 import { isSameDay } from 'date-fns'
+import { ListChecks } from 'lucide-react'
 
 function TagDot({ tagId }: { tagId: string }) {
   const getTagById = useTagStore((s) => s.getTagById)
@@ -28,6 +29,7 @@ interface DayCellProps {
   day: Date
   dateStr: string
   events: CalendarEvent[]
+  dailyTodoCount?: number
   eventRows: Record<string, number>
   isCurrentMonth: boolean
   isToday: boolean
@@ -43,7 +45,7 @@ interface DayCellProps {
   onRightClick: (e: React.MouseEvent) => void
 }
 
-export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, onClick, onDoubleClick, onRightClick, dateStr }: DayCellProps) {
+export function DayCell({ day, events, dailyTodoCount = 0, eventRows, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, onClick, onDoubleClick, onRightClick, dateStr }: DayCellProps) {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
@@ -61,7 +63,8 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
         borderLeft: `2px solid ${safeColor}`,
         borderRight: `2px solid ${safeColor}`,
         padding: compact ? '1px 3px' : '1px 5px',
-        boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.16)',
+        outline: '1px solid rgba(255,255,255,0.12)',
+        textShadow: 'none',
       }
     }
     const safeColor = normalizeHexColor(event.color)
@@ -73,7 +76,8 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
       borderLeft: isStart ? `2px solid ${safeColor}` : 'none',
       borderRight: isEnd ? `2px solid ${safeColor}` : 'none',
       padding: compact ? '1px 3px' : '1px 5px',
-      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.16)',
+      outline: '1px solid rgba(255,255,255,0.12)',
+      textShadow: 'none',
     }
   }
 
@@ -117,11 +121,12 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
         onDoubleClick={onDoubleClick}
         onContextMenu={handleContextMenu}
         className={cn(
-          'relative transition-colors cursor-pointer group flex flex-col',
+          'relative transition-colors cursor-pointer group flex flex-col overflow-hidden',
           'border hover:bg-accent/20',
           isToday && 'bg-primary/6 border-primary/25',
           isSelected && !isToday && 'ring-1 ring-inset ring-primary/40 bg-primary/4',
           isSelected && isToday && 'ring-1 ring-inset ring-primary/40',
+          dailyTodoCount > 0 && 'day-cell-has-daily',
           !isCurrentMonth && 'opacity-25',
           compact ? 'p-0.5 gap-px' : 'p-1.5 min-h-[80px] gap-0.5',
         )}
@@ -133,7 +138,7 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
         }}
       >
         {/* Day number + holiday name */}
-        <div className={cn('flex items-center gap-1 shrink-0', compact ? 'min-h-0' : 'h-6')}>
+        <div className={cn('flex items-center gap-1 shrink-0 min-w-0', dailyTodoCount > 0 && (compact ? 'pr-7' : 'pr-9'), compact ? 'min-h-0' : 'h-6')}>
           <span
             className={cn(
               'inline-flex items-center justify-center rounded-full shrink-0 font-semibold',
@@ -150,7 +155,7 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
           {holiday && (showHolidayLabel || isHolidayLabelDay(dateStr)) && (
             <span
               className={cn(
-                'truncate font-medium',
+                'min-w-0 truncate font-medium',
                 compact ? 'text-[0.55em]' : 'text-[0.65em]',
               )}
               style={holidayTextColor ? { color: holidayTextColor } : undefined}
@@ -159,11 +164,29 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
               {holiday}
             </span>
           )}
+          {dailyTodoCount > 0 && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办' })
+              }}
+              className={cn(
+                'daily-calendar-chip absolute right-1 top-1 z-10 flex max-w-[calc(100%-2rem)] items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-sm border px-1 font-semibold leading-tight',
+                compact ? 'text-[0.54em] py-px' : 'text-[0.6em] py-0.5'
+              )}
+              title={`${dateStr} 有 ${dailyTodoCount} 个每日待办`}
+            >
+              <ListChecks size={compact ? 8 : 10} className="shrink-0" />
+              <span>待办 {dailyTodoCount}</span>
+            </button>
+          )}
         </div>
 
         {/* Event badges - scrollable container */}
         <div className={cn('day-event-list flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-px', compact ? 'mt-px' : 'mt-0.5')}>
           {events.map((event) => {
+            const eventKey = getEventInstanceKey(event)
             const hasEndDate = event.endDate && event.endDate !== event.startDate
             const isMultiStart = hasEndDate && dateStr === event.startDate
             const isMultiEnd = hasEndDate && dateStr === event.endDate
@@ -176,10 +199,10 @@ export function DayCell({ day, events, eventRows, isCurrentMonth, isToday, compa
               : 'rounded-sm'
             return (
               <div
-                key={event.id}
+                key={eventKey}
                 onClick={(e) => {
                   e.stopPropagation()
-                  selectEvent(event.id)
+                  selectEvent(event.seriesId || event.id)
                 }}
                 className={cn(
                   'flex max-w-full min-w-0 items-center gap-0.5 text-[0.65em] leading-tight truncate cursor-pointer transition-opacity hover:opacity-75',

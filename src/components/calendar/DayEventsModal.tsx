@@ -1,6 +1,6 @@
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
-import { filterEventsByDate } from '@/lib/utils'
+import { filterEventsByDate, getEventInstanceKey } from '@/lib/utils'
 import { X, Tag } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -67,9 +67,9 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
                       const evTag = event.tagId ? getTagById(event.tagId) : null
                       return (
                       <button
-                        key={event.id}
+                        key={getEventInstanceKey(event)}
                         onClick={() => {
-                          selectEvent(event.id)
+                          selectEvent(event.seriesId || event.id)
                           onClose()
                         }}
                         className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors flex items-center gap-3"
