@@ -14,7 +14,9 @@
     "electron:build": "vite build && electron-builder",
     "killport": "node scripts/killport.cjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
   "devDependencies": {
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-tooltip": "^1.1.6",

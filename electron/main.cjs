@@ -4,52 +4,10 @@ const fs = require('fs');
 const { exec } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+const isMCPServer = process.argv.includes('--mcp-server');
 const DEV_PORT = parseInt(process.env.VITE_PORT || '5199', 10);
+const { ensureWritableDir, migrateUserData } = require('./userdata.cjs');
 const LEGACY_USER_DATA_DIR = app.getPath('userData');
-
-function samePath(a, b) {
-  return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
-}
-
-function ensureWritableDir(dir) {
-  const probe = path.join(dir, `.oknote-write-test-${Date.now()}`);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(probe, 'ok', 'utf-8');
-    fs.unlinkSync(probe);
-    return true;
-  } catch (e) {
-    try { if (fs.existsSync(probe)) fs.unlinkSync(probe); } catch {}
-    console.error('ensureWritableDir failed:', dir, e.message);
-    return false;
-  }
-}
-
-function copyMissingRecursive(src, dest) {
-  if (!fs.existsSync(src)) return;
-  const stat = fs.statSync(src);
-  if (stat.isDirectory()) {
-    fs.mkdirSync(dest, { recursive: true });
-    for (const name of fs.readdirSync(src)) {
-      copyMissingRecursive(path.join(src, name), path.join(dest, name));
-    }
-    return;
-  }
-  if (fs.existsSync(dest)) return;
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
-}
-
-function migrateUserData(fromDir, toDir) {
-  if (!fromDir || !toDir || samePath(fromDir, toDir) || !fs.existsSync(fromDir)) return;
-  for (const name of ['settings.json', 'window-bounds.json', 'data', 'Local Storage']) {
-    try {
-      copyMissingRecursive(path.join(fromDir, name), path.join(toDir, name));
-    } catch (e) {
-      console.error('migrateUserData failed:', name, e.message);
-    }
-  }
-}
 
 function resolveUserDataDir() {
   const envDir = process.env.OKNOTE_DATA_DIR ? path.resolve(process.env.OKNOTE_DATA_DIR) : null;
@@ -200,6 +158,34 @@ function saveNoteData(noteId, patchOrNote) {
 function notifyNotesChanged() {
   if (winRegistry.calendar && !winRegistry.calendar.isDestroyed()) {
     winRegistry.calendar.webContents.send('notes-changed');
+  }
+}
+
+// ── File watcher for MCP server changes ──
+let fileWatchTimer = null;
+function startFileWatcher() {
+  try {
+    ensureDataDir();
+    fs.watch(DATA_DIR, (eventType, filename) => {
+      if (!filename) return;
+      if (fileWatchTimer) clearTimeout(fileWatchTimer);
+      fileWatchTimer = setTimeout(() => {
+        fileWatchTimer = null;
+        if (filename === 'events.json') {
+          if (winRegistry.calendar && !winRegistry.calendar.isDestroyed()) {
+            broadcastEventsChanged({ action: 'events-changed' });
+          }
+        } else if (filename.startsWith('note_') && filename.endsWith('.json')) {
+          notifyNotesChanged();
+        } else if (filename === 'tags.json') {
+          const wins = [winRegistry.calendar, ...Object.values(winRegistry.notes)].filter(w => w && !w.isDestroyed());
+          wins.forEach(w => w.webContents.send('tags-changed'));
+        }
+      }, 200);
+    });
+    console.error('File watcher started for MCP changes:', DATA_DIR);
+  } catch (e) {
+    console.error('File watcher failed:', e.message);
   }
 }
 
@@ -1565,14 +1551,28 @@ function setupIPC(){
 }
 
 // ── App ──
-app.whenReady().then(()=>{
+app.whenReady().then(async ()=>{
   if(process.platform==='win32') app.setAppUserModelId('com.oknote.app');
+  if(isMCPServer){
+    ensureDataDir();
+    loadSettings();
+    try{
+      const { startServer } = await import('./mcp-server.mjs');
+      startServer(DATA_DIR);
+      console.error('OKNote MCP Server started via Electron --mcp-server');
+    }catch(e){
+      console.error('MCP Server mode failed:',e.message);
+      app.exit(1);
+    }
+    return;
+  }
   Menu.setApplicationMenu(null);
   ensureDataDir();
   loadSettings();loadWindowBounds();setupIPC();createTray();
   createCalendarWindow();
   app.setLoginItemSettings({ openAtLogin: appSettings.autoLaunch });
   startReminderScheduler();
+  startFileWatcher();
   // Start async font loading in background (non-blocking)
   loadSystemFontsAsync();
 });
