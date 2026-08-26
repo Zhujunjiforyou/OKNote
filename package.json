@@ -1,6 +1,17 @@
 {
   "name": "oknote",
   "version": "2.1.0",
+  "description": "Windows desktop calendar, sticky-note and reminder application.",
+  "author": "zhujunjiforyou",
+  "homepage": "https://github.com/Zhujunjiforyou/OKNote",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Zhujunjiforyou/OKNote.git"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=9"
+  },
   "license": "MIT",
   "type": "module",
   "main": "electron/main.cjs",
@@ -8,13 +19,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit",
-    "electron:dev": "node scripts/killport.cjs && cross-env NODE_ENV=development VITE_PORT=5199 concurrently --kill-others --kill-others-on-fail \"vite --port 5199 --strictPort\" \"wait-on http://localhost:5199 && electron . --dev\"",
-    "electron:preview": "vite build && electron .",
-    "electron:build": "vite build && electron-builder",
-    "killport": "node scripts/killport.cjs"
+    "lint": "tsc --noEmit -p tsconfig.app.json",
+    "test": "vitest run",
+    "test:electron-smoke": "node scripts/electron-smoke.cjs",
+    "prepare:icon": "node scripts/create-app-icon.cjs",
+    "preelectron:build": "node scripts/create-app-icon.cjs",
+    "electron:dev": "cross-env NODE_ENV=development VITE_PORT=5199 concurrently --kill-others --kill-others-on-fail \"vite --port 5199 --strictPort\" \"wait-on http://localhost:5199 && electron . --dev\"",
+    "electron:preview": "npm run build && electron .",
+    "electron:build": "tsc -b && vite build && electron-builder"
   },
-  "dependencies": {},
   "devDependencies": {
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-tooltip": "^1.1.6",
@@ -24,21 +37,22 @@
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "concurrently": "^9.2.1",
+    "concurrently": "^9.2.4",
     "cross-env": "^7.0.3",
     "date-fns": "^4.1.0",
-    "electron": "^41.4.0",
-    "electron-builder": "^26.8.1",
+    "electron": "^41.10.6",
+    "electron-builder": "^26.15.3",
     "framer-motion": "^11.15.0",
     "lucide-react": "^0.468.0",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.26",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.6.2",
-    "vite": "^6.0.5",
+    "vite": "^6.4.3",
+    "vitest": "^4.1.11",
     "wait-on": "^8.0.5",
     "zustand": "^5.0.2"
   },
@@ -46,7 +60,7 @@
     "appId": "com.oknote.app",
     "productName": "OKNote",
     "directories": {
-      "output": "release"
+      "output": "release/${version}"
     },
     "files": [
       "dist/**/*",
@@ -62,7 +76,7 @@
           ]
         }
       ],
-      "icon": null
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
@@ -71,7 +85,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "OKNote",
-      "deleteAppDataOnUninstall": true
+      "deleteAppDataOnUninstall": false
     }
   }
 }

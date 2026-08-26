@@ -2,6 +2,7 @@ node_modules
 dist
 dist-ssr
 release
+/build/icon.png
 *.local
 .DS_Store
 .qoder
