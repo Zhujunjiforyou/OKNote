@@ -83,6 +83,98 @@ html.electron-transparent #root {
   overflow: hidden;
 }
 
+.persistence-notice {
+  position: fixed;
+  z-index: 12000;
+  inset-inline: 14px;
+  inset-block-end: 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px 10px 10px 13px;
+  border-radius: 13px;
+  color: #fff7ed;
+  background: #431407;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.32);
+  user-select: text;
+}
+
+.persistence-notice-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.persistence-notice-copy strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.persistence-notice-copy span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #fed7aa;
+}
+
+.persistence-notice button {
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 9px;
+  color: inherit;
+}
+
+.persistence-notice-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-inline: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.persistence-notice-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.72;
+}
+
+.persistence-notice button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.persistence-notice button:focus-visible {
+  outline: 2px solid #fdba74;
+  outline-offset: 2px;
+}
+
+.persistence-notice button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+@media (max-width: 420px) {
+  .persistence-notice {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .persistence-notice-retry {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .persistence-notice-close {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -123,6 +215,10 @@ html.electron-transparent #root {
   overflow: hidden;
 }
 
+.calendar-window .cal-window-bg {
+  transition: opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .calendar-window > *:not(.absolute):not(.fixed) {
   position: relative;
 }
@@ -136,18 +232,26 @@ html.electron-transparent #root {
 }
 
 .calendar-collapsed::after {
-  content: "";
+  content: "日历 · 悬停展开";
   position: absolute;
   left: 50%;
   top: 50%;
   z-index: 80;
-  width: 72px;
-  height: 3px;
+  width: auto;
+  min-width: 112px;
+  height: 20px;
+  padding: 0 10px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--calendar-text) 38%, transparent);
+  color: color-mix(in srgb, var(--calendar-text) 78%, transparent);
+  background: color-mix(in srgb, var(--calendar-text) 10%, transparent);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.10), 0 4px 14px rgba(4,10,24,0.18);
   transform: translate(-50%, -50%);
+  font-size: 11px;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
   pointer-events: none;
+  animation: calendar-edge-hint-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .calendar-collapsed .cal-window-bg {
@@ -160,7 +264,7 @@ html.electron-transparent #root {
   display: none !important;
 }
 .calendar-collapsed .cal-titlebar {
-  min-height: 18px;
+  min-height: 28px;
   padding-top: 0;
   padding-bottom: 0;
   border-bottom: 0;
@@ -191,6 +295,12 @@ html.electron-transparent #root {
   flex-wrap: nowrap;
 }
 
+/* Menu positioning wrappers contain controls but no text of their own. Do not
+   let a large inherited line-height create invisible titlebar height. */
+.cal-left-actions > .relative {
+  line-height: 0;
+}
+
 .cal-left-actions-measure {
   position: absolute;
   left: 0;
@@ -209,6 +319,8 @@ html.electron-transparent #root {
 }
 
 .cal-right-actions {
+  position: relative;
+  z-index: 80;
   justify-self: end;
 }
 
@@ -220,6 +332,38 @@ html.electron-transparent #root {
   white-space: nowrap;
   overflow: hidden;
   max-width: none;
+  min-height: 32px;
+  line-height: 1;
+  padding-block: 0;
+  border-color: transparent !important;
+  background: transparent;
+}
+
+.cal-month-title {
+  line-height: 1;
+}
+
+.cal-action:hover,
+.cal-action:focus-visible {
+  background: color-mix(in srgb, var(--calendar-text) 9%, transparent);
+}
+
+.calendar-type-xlarge .cal-titlebar {
+  column-gap: 0.3rem;
+}
+
+.calendar-type-xlarge .cal-left-actions {
+  gap: 0.15rem;
+}
+
+.calendar-type-xlarge .cal-action {
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+
+.cal-view-switch button {
+  min-width: 28px;
+  min-height: 28px;
 }
 
 .cal-action-hidden {
@@ -255,6 +399,44 @@ html.electron-transparent #root {
   }
 }
 
+@media (max-width: 399px) {
+  .calendar-window:not(.calendar-collapsed) .cal-titlebar {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .calendar-window:not(.calendar-collapsed) .cal-month-nav,
+  .calendar-window:not(.calendar-collapsed) .cal-right-actions {
+    gap: 0;
+  }
+
+  .calendar-window:not(.calendar-collapsed) .cal-month-nav > button:first-child,
+  .calendar-window:not(.calendar-collapsed) .cal-month-nav > button:last-child,
+  .calendar-window:not(.calendar-collapsed) .cal-right-actions > button {
+    width: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+    flex: 0 0 28px;
+  }
+
+  .calendar-window:not(.calendar-collapsed) .cal-month-nav > button:nth-child(2) {
+    width: 86px !important;
+    min-width: 86px !important;
+    max-width: 86px !important;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    flex: 0 0 86px;
+    line-height: 1;
+    padding-inline: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
 .calendar-density-compact:not(.calendar-collapsed) .cal-titlebar {
   padding-top: 0.35rem;
   padding-bottom: 0.35rem;
@@ -268,12 +450,18 @@ html.electron-transparent #root {
 
 .calendar-density-compact:not(.calendar-collapsed) .cal-chevron-left,
 .calendar-density-compact:not(.calendar-collapsed) .cal-chevron-right {
-  width: 1.55rem !important;
-  height: 1.55rem !important;
+  width: 2rem !important;
+  height: 2rem !important;
+}
+
+.view-note-panel {
+  container-type: inline-size;
+  width: clamp(176px, 27vw, 300px);
+  min-width: 0;
 }
 
 .calendar-density-compact .view-note-panel {
-  width: clamp(190px, 30vw, 260px) !important;
+  width: clamp(160px, 28vw, 250px);
 }
 
 .calendar-density-compact .view-filter-chip {
@@ -283,7 +471,7 @@ html.electron-transparent #root {
 .calendar-window:not(.calendar-collapsed) .cal-main-content,
 .calendar-window:not(.calendar-collapsed) [data-dock-area] {
   transform-origin: top center;
-  animation: calendar-roll-open 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: calendar-roll-open 270ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dock-resizer {
@@ -327,14 +515,23 @@ html.electron-transparent #root {
 
 @keyframes calendar-roll-open {
   from {
-    opacity: 0.72;
-    transform: scaleY(0.94);
-    filter: blur(0.5px);
+    opacity: 0.82;
+    transform: translateY(-6px) scale(0.992);
   }
   to {
     opacity: 1;
-    transform: scaleY(1);
-    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes calendar-edge-hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
@@ -383,16 +580,20 @@ html.electron-transparent #root {
 }
 
 .dock-board {
-  perspective: 1100px;
-  perspective-origin: 50% 48%;
+  perspective: 820px;
+  perspective-origin: 50% 46%;
+  padding: clamp(7px, 1.2vh, 12px) clamp(28px, 4vw, 48px);
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease;
 }
 
 .dock-board-item {
   min-height: 0;
+  transform-style: preserve-3d;
 }
 
 .dock-main-strip {
+  transform: translateZ(28px);
+  transform-style: preserve-3d;
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -402,9 +603,10 @@ html.electron-transparent #root {
 
 .dock-peek {
   z-index: 2;
-  pointer-events: none;
-  opacity: 0.64;
-  filter: saturate(0.82) contrast(0.96);
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0.76;
+  filter: saturate(0.72) brightness(0.88);
   transform-style: preserve-3d;
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease, filter 0.22s ease;
 }
@@ -412,16 +614,34 @@ html.electron-transparent #root {
 .dock-peek-left {
   left: 0;
   transform-origin: right center;
-  transform: translate3d(-78%, -50%, -110px) rotateY(32deg) scale(0.94);
+  transform: translate3d(-74%, -50%, -155px) rotateY(48deg) scale(0.9);
 }
 
 .dock-peek-right {
   right: 0;
   transform-origin: left center;
-  transform: translate3d(78%, -50%, -110px) rotateY(-32deg) scale(0.94);
+  transform: translate3d(74%, -50%, -155px) rotateY(-48deg) scale(0.9);
+}
+
+.dock-peek:hover,
+.dock-peek:focus-visible {
+  opacity: 0.94;
+  filter: saturate(0.9) brightness(0.98);
+  outline: none;
+}
+
+.dock-peek-left:hover,
+.dock-peek-left:focus-visible {
+  transform: translate3d(-70%, -50%, -132px) rotateY(44deg) scale(0.92);
+}
+
+.dock-peek-right:hover,
+.dock-peek-right:focus-visible {
+  transform: translate3d(70%, -50%, -132px) rotateY(-44deg) scale(0.92);
 }
 
 .docked-note-card {
+  container-type: inline-size;
   border-radius: 0;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background:
@@ -434,7 +654,7 @@ html.electron-transparent #root {
     inset 0 -1px 0 rgba(0, 0, 0, 0.08),
     0 18px 48px rgba(4, 10, 24, 0.34);
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.10);
+  text-shadow: none;
 }
 
 .docked-note-card::before {
@@ -459,71 +679,28 @@ html.electron-transparent #root {
   z-index: 2;
 }
 
-.docked-note-card-independent::before {
-  border-top: 5px solid color-mix(in srgb, var(--note-accent) 74%, white 26%);
-  background:
-    radial-gradient(circle at 86% 88%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 24%),
-    linear-gradient(180deg, rgba(255,255,255,0.18), transparent 28%),
-    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.075) 31px 32px);
+.docked-note-card > div:first-child {
+  line-height: 1;
 }
 
-.docked-note-card-independent::after {
-  inset: 9px 10px auto auto;
-  width: 30px;
-  height: 18px;
-  border-radius: 2px 2px 5px 5px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.10));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
-  transform: rotate(2deg);
-  opacity: 0.54;
-}
-
-.docked-note-card-echo::before {
-  border-left: 7px solid color-mix(in srgb, var(--note-accent) 70%, white 30%);
-  background:
-    radial-gradient(circle at 82% 82%, color-mix(in srgb, var(--note-accent) 20%, transparent), transparent 25%),
-    linear-gradient(90deg, rgba(255,255,255,0.22), transparent 48%),
-    repeating-linear-gradient(90deg, transparent 0 24px, rgba(255,255,255,0.105) 24px 25px),
-    repeating-linear-gradient(180deg, transparent 0 24px, rgba(255,255,255,0.08) 24px 25px);
-}
-
-.docked-note-card-echo::after {
-  inset: auto 14px 52px auto;
-  width: 48px;
-  height: 48px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background:
-    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.12) 0 3px, transparent 3px),
-    conic-gradient(from 0deg, transparent 0 25%, rgba(255,255,255,0.16) 25% 34%, transparent 34% 58%, rgba(255,255,255,0.16) 58% 67%, transparent 67%);
-  opacity: 0.42;
-}
-
+.docked-note-card-independent::before,
+.docked-note-card-echo::before,
 .docked-note-card-daily::before {
-  border-top: 5px solid color-mix(in srgb, var(--note-accent) 74%, white 26%);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.17), transparent 30%),
-    repeating-linear-gradient(0deg, transparent 0 28px, rgba(255,255,255,0.08) 28px 29px),
-    repeating-linear-gradient(90deg, transparent 0 34px, rgba(255,255,255,0.06) 34px 35px);
+  border: 0;
+  background: none;
 }
 
+.docked-note-card-independent::after,
+.docked-note-card-echo::after,
 .docked-note-card-daily::after {
-  inset: 11px 12px auto auto;
-  width: 34px;
-  height: 26px;
-  border-radius: 5px;
-  border: 1px solid rgba(255,255,255,0.20);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 34%, transparent) 0 28%, rgba(255,255,255,0.12) 28%);
-  opacity: 0.48;
+  display: none;
 }
 
 .docked-note-card-active {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
     inset 0 -1px 0 rgba(0, 0, 0, 0.08),
-    0 22px 58px rgba(4, 10, 24, 0.40);
+    0 22px 58px rgba(4, 10, 24, 0.4);
 }
 
 .docked-note-card-inactive {
@@ -531,9 +708,9 @@ html.electron-transparent #root {
 }
 
 .docked-note-card:hover {
-  border-color: color-mix(in srgb, var(--note-accent) 42%, white 26%);
+  border-color: rgba(255, 255, 255, 0.3);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
     inset 0 -1px 0 rgba(0, 0, 0, 0.08),
     0 24px 64px rgba(4, 10, 24, 0.46);
   transform: translateY(-2px);
@@ -548,31 +725,17 @@ html.electron-transparent #root {
 
 .docked-note-kind-badge {
   color: var(--note-text);
-  border: 1px solid color-mix(in srgb, var(--note-accent) 54%, white 30%);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.10) inset;
-  font-weight: 700;
-  opacity: 0.96;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+  font-weight: 600;
+  opacity: 0.68;
 }
 
-.docked-note-kind-badge-independent {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.10)),
-    color-mix(in srgb, var(--note-accent) 26%, transparent);
-  border-radius: 4px;
-}
-
-.docked-note-kind-badge-echo {
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.16) 0 1px, transparent 1px 5px),
-    color-mix(in srgb, var(--note-accent) 34%, transparent);
-  border-radius: 999px;
-}
-
+.docked-note-kind-badge-independent,
+.docked-note-kind-badge-echo,
 .docked-note-kind-badge-daily {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
-    color-mix(in srgb, var(--note-accent) 30%, transparent);
-  border-radius: 5px;
+  border-radius: 999px;
 }
 
 .docked-note-input {
@@ -595,7 +758,7 @@ html.electron-transparent #root {
 
 .docked-note-card-attention {
   animation: docked-note-attention 0.42s ease-in-out 0s 4 alternate;
-  border-color: color-mix(in srgb, var(--note-accent) 82%, white 18%) !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
 }
 
 .dock-drag-preview {
@@ -625,6 +788,7 @@ html.electron-transparent #root {
 }
 
 .note-window-root {
+  container-type: inline-size;
   position: relative;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 0;
@@ -632,46 +796,29 @@ html.electron-transparent #root {
   -webkit-backdrop-filter: blur(18px) saturate(1.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
     0 18px 52px rgba(4, 10, 24, 0.38);
   transition: box-shadow 0.18s ease, filter 0.18s ease, border-color 0.18s ease;
 }
 
-.note-window-independent-note {
-  box-shadow:
-    inset 0 5px 0 color-mix(in srgb, var(--note-accent) 70%, white 30%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
-    0 18px 52px rgba(4, 10, 24, 0.38);
-}
-
-.note-window-echo-note {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 7px 0 0 color-mix(in srgb, var(--note-accent) 64%, white 36%),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
-    0 18px 52px rgba(4, 10, 24, 0.38);
-}
-
+.note-window-independent-note,
+.note-window-echo-note,
 .note-window-daily-note {
   box-shadow:
-    inset 0 5px 0 color-mix(in srgb, var(--note-accent) 70%, white 30%),
     inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
     0 18px 52px rgba(4, 10, 24, 0.38);
 }
 
 .note-window-daily-note .note-window-base {
   background:
-    linear-gradient(155deg, rgba(255,255,255,0.30), rgba(255,255,255,0.08) 34%, rgba(0,0,0,0.06)),
+    linear-gradient(155deg, rgba(255,255,255,0.3), rgba(255,255,255,0.08) 34%, rgba(0,0,0,0.06)),
     radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 32%),
     var(--note-shell);
 }
 
 .note-window-daily-note .note-window-titlebar {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 28%, transparent), rgba(255,255,255,0.05)),
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.10) 0 1px, transparent 1px 12px);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 28%, transparent), rgba(255,255,255,0.05));
 }
 
 .note-window-root::before {
@@ -706,116 +853,46 @@ html.electron-transparent #root {
 }
 
 .note-window-titlebar {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 17%, transparent), rgba(255,255,255,0.04));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 17%, transparent), rgba(255,255,255,0.04));
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .note-window-echo-note .note-window-titlebar {
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.075) 0 1px, transparent 1px 7px),
-    linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 22%, transparent), rgba(255,255,255,0.04));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 22%, transparent), rgba(255,255,255,0.04));
 }
 
 .note-accent-line {
-  height: 2px;
-  background:
-    linear-gradient(90deg, transparent, color-mix(in srgb, var(--note-accent) 82%, white 18%), transparent);
-  opacity: 0.72;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--note-accent) 44%, transparent);
+  height: 1px;
+  background: currentColor;
+  opacity: 0.1;
+  box-shadow: none;
 }
 
-.note-window-independent-note::before {
-  background:
-    radial-gradient(circle at 85% 82%, color-mix(in srgb, var(--note-accent) 24%, transparent), transparent 26%),
-    linear-gradient(180deg, rgba(255,255,255,0.12), transparent 26%),
-    repeating-linear-gradient(180deg, transparent 0 33px, rgba(255,255,255,0.07) 33px 34px);
-}
-
-.note-window-independent-note::after {
-  inset: 12px 16px auto auto;
-  width: 46px;
-  height: 22px;
-  border-radius: 2px 2px 6px 6px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.06));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
-  transform: rotate(2deg);
-  opacity: 0.42;
-}
-
-.note-window-echo-note::before {
-  background:
-    radial-gradient(circle at 88% 82%, color-mix(in srgb, var(--note-accent) 22%, transparent), transparent 26%),
-    linear-gradient(90deg, rgba(255,255,255,0.20), transparent 48%),
-    repeating-linear-gradient(90deg, transparent 0 24px, rgba(255,255,255,0.10) 24px 25px),
-    repeating-linear-gradient(180deg, transparent 0 24px, rgba(255,255,255,0.078) 24px 25px),
-    radial-gradient(circle at 16% 0%, rgba(255,255,255,0.18), transparent 32%);
-}
-
-.note-window-echo-note::after {
-  right: 18px;
-  bottom: 64px;
-  width: 64px;
-  height: 64px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background:
-    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.16) 0 3px, transparent 3px),
-    conic-gradient(from 18deg, transparent 0 21%, rgba(255,255,255,0.15) 21% 32%, transparent 32% 55%, rgba(255,255,255,0.15) 55% 66%, transparent 66%),
-    radial-gradient(circle at 50% 50%, transparent 0 42%, rgba(255,255,255,0.08) 43% 45%, transparent 46%);
-  opacity: 0.42;
-}
-
+.note-window-independent-note::before,
+.note-window-echo-note::before,
 .note-window-daily-note::before {
-  background:
-    radial-gradient(circle at 85% 82%, color-mix(in srgb, var(--note-accent) 22%, transparent), transparent 26%),
-    linear-gradient(180deg, rgba(255,255,255,0.12), transparent 28%),
-    repeating-linear-gradient(180deg, transparent 0 34px, rgba(255,255,255,0.07) 34px 35px),
-    repeating-linear-gradient(90deg, transparent 0 42px, rgba(255,255,255,0.045) 42px 43px);
+  background: none;
 }
 
+.note-window-independent-note::after,
+.note-window-echo-note::after,
 .note-window-daily-note::after {
-  right: 18px;
-  top: 48px;
-  width: 50px;
-  height: 38px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.18);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 34%, transparent) 0 28%, rgba(255,255,255,0.10) 28%),
-    repeating-linear-gradient(90deg, transparent 0 12px, rgba(255,255,255,0.10) 12px 13px);
-  opacity: 0.42;
+  display: none;
 }
 
 .note-type-badge {
-  background: rgba(255, 255, 255, 0.10);
-  color: currentColor;
-  opacity: 0.48;
-}
-
-.note-type-badge-independent {
-  border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--note-accent) 50%, white 28%);
-  background: color-mix(in srgb, var(--note-accent) 24%, transparent);
-  opacity: 0.78;
-}
-
-.note-type-badge-echo {
+  border: 0;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--note-accent) 58%, white 24%);
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.14) 0 1px, transparent 1px 5px),
-    color-mix(in srgb, var(--note-accent) 30%, transparent);
-  opacity: 0.88;
-  box-shadow: 0 0 18px color-mix(in srgb, var(--note-accent) 18%, transparent);
+  background: rgba(255, 255, 255, 0.12);
+  color: currentColor;
+  opacity: 0.66;
+  box-shadow: none;
 }
 
+.note-type-badge-independent,
+.note-type-badge-echo,
 .note-type-badge-daily {
-  border-radius: 5px;
-  border: 1px solid color-mix(in srgb, var(--note-accent) 55%, white 26%);
-  background: color-mix(in srgb, var(--note-accent) 28%, transparent);
-  opacity: 0.84;
+  border-radius: 999px;
 }
 
 .daily-todo-panel {
@@ -823,16 +900,7 @@ html.electron-transparent #root {
 }
 
 .daily-todo-panel::before {
-  content: "";
-  position: absolute;
-  left: 1.35rem;
-  top: 4.4rem;
-  bottom: 0.75rem;
-  width: 2px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 70%, white 16%), transparent);
-  opacity: 0.34;
-  pointer-events: none;
+  display: none;
 }
 
 .daily-todo-panel-compact::before {
@@ -845,10 +913,10 @@ html.electron-transparent #root {
 }
 
 .daily-date-switch {
-  border-radius: 12px;
+  border-radius: 9px;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.18),
-    0 10px 24px rgba(4, 10, 24, 0.10);
+    0 6px 16px rgba(4, 10, 24, 0.08);
 }
 
 .daily-date-display {
@@ -872,12 +940,12 @@ html.electron-transparent #root {
 }
 
 .daily-date-switch {
-  min-height: 3.15rem;
+  min-height: clamp(34px, 2.5em, 46px);
 }
 
 .daily-date-switch-compact {
-  min-height: 2.2rem;
-  border-radius: 10px;
+  min-height: clamp(26px, 1.9em, 34px);
+  border-radius: 8px;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.14),
     0 6px 14px rgba(4, 10, 24, 0.08);
@@ -890,7 +958,7 @@ html.electron-transparent #root {
 }
 
 .daily-date-switch-compact .daily-date-display {
-  min-height: 1.85rem;
+  min-height: clamp(22px, 1.6em, 30px);
 }
 
 .daily-date-display input,
@@ -906,37 +974,41 @@ html.electron-transparent #root {
 }
 
 .daily-list {
-  padding-left: 0.55rem;
+  padding-inline: 0;
 }
 
 .daily-todo-panel-compact .daily-list {
-  flex: 0 0 auto;
-  min-height: 2.25rem;
-  overflow: visible !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
   padding-bottom: 0.25rem;
 }
 
 .daily-list .note-todo-item {
   border-radius: 6px;
-  border-left: 3px solid color-mix(in srgb, var(--note-accent) 62%, white 18%);
+  border: 1px solid color-mix(in srgb, var(--note-accent) 38%, white 14%);
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--note-accent) 14%, transparent), transparent 46%),
     color-mix(in srgb, var(--note-panel) 78%, transparent);
 }
 
 .daily-list .note-todo-item:hover {
-  border-left-color: color-mix(in srgb, var(--note-accent) 86%, white 8%);
+  border-color: color-mix(in srgb, var(--note-accent) 68%, white 10%);
 }
 
 .daily-empty-date {
-  width: 5.5rem;
-  height: 3.2rem;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 30%, transparent) 0 32%, rgba(255,255,255,0.07) 32%),
-    repeating-linear-gradient(90deg, transparent 0 1.25rem, rgba(255,255,255,0.08) 1.25rem 1.32rem);
+  width: clamp(60px, 5.5em, 88px);
+  height: clamp(38px, 3.2em, 52px);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--note-accent) 30%, transparent) 0 32%, rgba(255,255,255,0.07) 32%);
 }
 
 .daily-composer {
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  overflow: hidden;
+  line-height: 1;
   border-radius: 12px;
   border-style: dashed;
   background:
@@ -944,21 +1016,40 @@ html.electron-transparent #root {
     color-mix(in srgb, var(--note-accent) 10%, transparent) !important;
 }
 
-.day-cell-has-daily {
-  background-image:
-    linear-gradient(135deg, rgba(34,197,94,0.15), transparent 42%) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(34,197,94,0.32),
-    inset 3px 0 0 rgba(34,197,94,0.62);
+.daily-composer input {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  line-height: 1;
 }
 
-.day-cell-has-daily:hover {
-  background-image:
-    linear-gradient(135deg, rgba(34,197,94,0.20), transparent 46%) !important;
+.view-event-meta > svg {
+  flex: 0 0 auto;
+}
+
+.view-deadline-chip {
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 300px) {
+  .view-deadline-full {
+    display: none;
+  }
+
+  .view-deadline-compact {
+    display: inline;
+  }
+}
+
+.day-adjusted-workday {
+  color: color-mix(in srgb, var(--calendar-text) 88%, #b45309 12%);
+  background: rgba(245, 158, 11, 0.17);
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  text-shadow: none;
 }
 
 .daily-calendar-chip {
-  max-width: calc(100% - 2rem);
+  max-width: none;
   color: color-mix(in srgb, var(--calendar-text) 88%, #16a34a 12%);
   background:
     linear-gradient(90deg, rgba(34,197,94,0.30), rgba(34,197,94,0.14));
@@ -973,6 +1064,41 @@ html.electron-transparent #root {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.calendar-todo-preview {
+  color: color-mix(in srgb, var(--calendar-text) 88%, #15803d 12%);
+  border: 1px solid rgba(34, 197, 94, 0.42);
+  background: rgba(34, 197, 94, 0.14);
+  text-shadow: none;
+}
+
+.calendar-event-time {
+  padding: 1px 2px;
+  border-radius: 3px;
+  line-height: 1.05;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 28%, transparent);
+}
+
+.event-time-input {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+.light .event-time-input {
+  color-scheme: light;
+}
+
+.event-time-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.9;
+  filter: brightness(0) invert(1);
+}
+
+.light .event-time-input::-webkit-calendar-picker-indicator {
+  opacity: 0.72;
+  filter: none;
 }
 
 .day-event-list > div {
@@ -1006,24 +1132,12 @@ html.electron-transparent #root {
   position: relative;
   overflow: hidden;
   border-color: color-mix(in srgb, var(--event-color) 42%, transparent) !important;
-  background-image:
-    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 16%, transparent), transparent 52%);
-  box-shadow:
-    inset 3px 0 0 color-mix(in srgb, var(--event-color) 78%, white 8%),
-    inset 0 1px 0 rgba(255,255,255,0.16);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--event-color) 8%, transparent), transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
 }
 
 .echo-event-item-recurring::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  top: 7px;
-  bottom: 7px;
-  width: 1px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--event-color) 66%, white 14%), transparent);
-  opacity: 0.56;
-  pointer-events: none;
+  display: none;
 }
 
 .echo-recurring-chip,
@@ -1039,31 +1153,18 @@ html.electron-transparent #root {
   position: relative;
   overflow: hidden;
   border-color: color-mix(in srgb, var(--event-color) 40%, transparent) !important;
-  background-image:
-    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 14%, transparent), transparent 56%);
-  box-shadow:
-    inset 3px 0 0 color-mix(in srgb, var(--event-color) 76%, white 10%),
-    inset 0 1px 0 rgba(255,255,255,0.12);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--event-color) 7%, transparent), transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);
 }
 
 .view-event-item-recurring::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  top: 7px;
-  bottom: 7px;
-  width: 1px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--event-color) 62%, white 14%), transparent);
-  opacity: 0.50;
-  pointer-events: none;
+  display: none;
 }
 
 .echo-event-item-recurring:hover,
 .view-event-item-recurring:hover {
   border-color: color-mix(in srgb, var(--event-color) 58%, white 12%) !important;
-  background-image:
-    linear-gradient(90deg, color-mix(in srgb, var(--event-color) 22%, transparent), transparent 58%);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--event-color) 12%, transparent), transparent);
 }
 
 .note-todo-item {
@@ -1074,6 +1175,13 @@ html.electron-transparent #root {
   transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
 }
 
+.docked-note-card .note-todo-item {
+  flex: 0 0 auto;
+  height: auto !important;
+  min-height: 0;
+  max-height: none;
+}
+
 .note-todo-item:hover {
   background: var(--note-panel);
   border-color: var(--note-panel-border);
@@ -1082,9 +1190,42 @@ html.electron-transparent #root {
 }
 
 .note-composer-control {
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  overflow: hidden;
+  line-height: 1;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.14),
     0 8px 22px rgba(4, 10, 24, 0.10);
+}
+
+.note-composer-control input {
+  height: 100%;
+  min-height: 0;
+  line-height: 1;
+}
+
+.docked-note-footer {
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.docked-note-footer > * {
+  height: 100%;
+  min-height: 0;
+}
+
+.docked-note-footer input,
+.docked-note-footer button {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  line-height: 1;
+  overflow: hidden;
 }
 
 .note-composer-control input::placeholder {
@@ -1096,12 +1237,668 @@ html.electron-transparent #root {
 }
 
 .day-event-list {
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--calendar-text) 24%, transparent) transparent;
 }
 
 .day-event-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.day-event-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--calendar-text) 24%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.day-event-list:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--calendar-text) 42%, transparent);
+}
+
+/* Unified app menus */
+.day-context-menu {
+  color: hsl(var(--popover-foreground));
+  background: hsl(var(--popover) / 0.99);
+  box-shadow: 0 18px 48px rgba(2, 8, 23, 0.36), 0 3px 12px rgba(2, 8, 23, 0.18);
+}
+
+.day-context-action {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.35rem;
+  color: inherit;
+}
+
+.day-context-action:hover,
+.day-context-action:focus-visible {
+  background: hsl(var(--accent));
+  outline: none;
+}
+
+.day-context-action > svg {
+  color: hsl(var(--primary));
+}
+
+.day-context-action strong,
+.day-context-action small {
+  display: block;
+}
+
+.day-context-action strong {
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.day-context-action small {
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  opacity: 0.55;
+}
+
+/* Continuous typography: both surfaces use the configured value as the same
+   base size. Fixed Tailwind text utilities are translated to relative roles so
+   they scale without changing rem-based spacing or control geometry. */
+.calendar-window .text-base,
+.note-window-root .text-base,
+.docked-note-card .text-base {
+  font-size: 1.142857em;
+}
+
+.calendar-window .text-sm,
+.note-window-root .text-sm,
+.docked-note-card .text-sm {
+  font-size: 1em;
+}
+
+.calendar-window .text-xs,
+.note-window-root .text-xs,
+.docked-note-card .text-xs {
+  font-size: 0.857143em;
+}
+
+.calendar-window .text-\[11px\],
+.note-window-root .text-\[11px\],
+.docked-note-card .text-\[11px\] {
+  font-size: 0.785714em;
+}
+
+.calendar-window .text-\[10px\],
+.note-window-root .text-\[10px\],
+.docked-note-card .text-\[10px\] {
+  font-size: 0.714286em;
+}
+
+/* Viewport-aware calendar density */
+.calendar-window:not(.calendar-collapsed) .cal-titlebar {
+  padding-top: clamp(0.36rem, calc(0.625rem * var(--calendar-density)), 0.625rem);
+  padding-bottom: clamp(0.36rem, calc(0.625rem * var(--calendar-density)), 0.625rem);
+  padding-left: clamp(0.65rem, calc(1rem * var(--calendar-density)), 1rem);
+  padding-right: clamp(0.65rem, calc(1rem * var(--calendar-density)), 1rem);
+}
+
+.calendar-window:not(.calendar-collapsed) .cal-main-content {
+  padding-left: clamp(0.5rem, calc(0.75rem * var(--calendar-density)), 0.75rem);
+  padding-right: clamp(0.5rem, calc(0.75rem * var(--calendar-density)), 0.75rem);
+  padding-bottom: clamp(0.5rem, calc(0.75rem * var(--calendar-density)), 0.75rem);
+}
+
+.calendar-type-large .cal-action {
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+}
+
+.calendar-type-large .cal-month-nav {
+  gap: 0.1rem;
+}
+
+.calendar-type-xlarge .cal-titlebar {
+  min-height: 44px;
+}
+
+.calendar-type-xlarge .cal-action {
+  min-height: 30px;
+}
+
+.calendar-type-xlarge .cal-month-nav > button:nth-child(2) {
+  min-width: 74px;
+}
+
+.calendar-density-compact [role="gridcell"] {
+  padding: clamp(1px, calc(0.125rem * var(--calendar-density)), 4px) !important;
+  gap: 1px !important;
+}
+
+.calendar-type-xlarge [role="gridcell"] > div:first-child {
+  height: auto;
+  min-height: 24px;
+}
+
+.calendar-type-xlarge .calendar-day-number {
+  width: 24px !important;
+  min-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+}
+
+.calendar-type-xlarge .day-event-list [role="button"],
+.calendar-type-xlarge .calendar-todo-preview {
+  min-height: 19px;
+  padding-block: 1px !important;
+}
+
+.calendar-type-xlarge .daily-calendar-chip,
+.calendar-viewport-narrow .daily-calendar-chip {
+  width: 24px !important;
+  min-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px;
+  padding: 0;
+}
+
+.calendar-type-xlarge .daily-calendar-chip-label,
+.calendar-viewport-narrow .daily-calendar-chip-label {
+  display: none;
+}
+
+.calendar-type-xlarge .view-note-panel {
+  width: clamp(210px, 34vw, 380px);
+}
+
+.calendar-viewport-narrow .view-note-panel {
+  width: clamp(150px, 38vw, 190px);
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .view-note-panel {
+  width: clamp(164px, 42vw, 220px);
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .view-date-full {
+  display: none;
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .view-date-short {
+  display: inline;
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .view-event-count {
+  display: none;
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip {
+  width: 24px !important;
+  min-width: 24px;
+  max-width: 24px;
+  height: 24px !important;
+  min-height: 24px;
+  padding: 0;
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip > * {
+  display: inline;
+}
+
+.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip::after {
+  display: none;
+}
+
+.calendar-type-xlarge .cal-view-switch > button {
+  height: 28px;
+  padding-block: 0;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.calendar-type-max [role="gridcell"] {
+  padding: 2px !important;
+}
+
+.calendar-type-max .calendar-grid-scroll {
+  overflow: auto !important;
+  overscroll-behavior: contain;
+}
+
+.calendar-type-max .month-grid {
+  min-width: var(--calendar-grid-min-width);
+  min-height: calc(var(--calendar-grid-min-height) + 2em);
+}
+
+.calendar-type-max .month-grid-body {
+  flex: 0 0 auto;
+  min-height: var(--calendar-grid-min-height);
+}
+
+.calendar-type-max .calendar-day-number,
+.calendar-type-max .daily-calendar-chip {
+  width: max(24px, 0.9em) !important;
+  min-width: max(24px, 0.9em) !important;
+  height: max(24px, 0.9em) !important;
+  min-height: max(24px, 0.9em);
+}
+
+.calendar-type-max .day-event-list [role="button"],
+.calendar-type-max .calendar-todo-preview {
+  min-height: max(20px, 1.05em);
+  padding-block: 0 !important;
+  line-height: 1.05;
+}
+
+.calendar-type-xlarge .view-note-panel > div:first-child {
+  padding: 7px 8px 4px;
+}
+
+.calendar-type-xlarge .view-note-panel > div:nth-child(2) {
+  padding-inline: 7px;
+  gap: 4px;
+}
+
+.calendar-type-xlarge .view-filter-chip {
+  padding: 2px 6px;
+}
+
+.calendar-type-xlarge .view-event-item {
+  padding: 6px 7px;
+  column-gap: 6px;
+}
+
+.calendar-type-xlarge .view-event-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.calendar-viewport-short .dock-board {
+  padding-block: 5px;
+}
+
+.calendar-viewport-short .view-note-panel > div:first-child {
+  padding-top: 6px;
+}
+
+.calendar-viewport-short .view-note-panel > div:nth-child(2) {
+  padding-bottom: 5px;
+}
+
+.calendar-date-picker {
+  text-shadow: none;
+}
+
+.calendar-year-input {
+  color: inherit;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  caret-color: hsl(var(--primary));
+}
+
+.calendar-year-input::selection {
+  background: hsl(var(--primary) / 0.28);
+}
+
+.calendar-year-strip {
+  touch-action: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
+
+.calendar-year-strip[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.calendar-year-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.calendar-year-strip::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.calendar-year-strip::-webkit-scrollbar-button {
+  display: none;
   width: 0;
   height: 0;
+}
+
+/* Settings window */
+.settings-window-bg {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.settings-window .opacity-35 { opacity: 0.56; }
+.settings-window .opacity-40 { opacity: 0.6; }
+.settings-window .opacity-45 { opacity: 0.64; }
+.settings-window .opacity-50 { opacity: 0.68; }
+.settings-window .opacity-55 { opacity: 0.72; }
+.settings-window .opacity-60 { opacity: 0.76; }
+
+.light .settings-window .opacity-35 { opacity: 0.62; }
+.light .settings-window .opacity-40 { opacity: 0.66; }
+.light .settings-window .opacity-45 { opacity: 0.7; }
+.light .settings-window .opacity-50 { opacity: 0.74; }
+.light .settings-window .opacity-55 { opacity: 0.78; }
+.light .settings-window .opacity-60 { opacity: 0.82; }
+
+.settings-titlebar,
+.settings-sidebar {
+  background: color-mix(in srgb, var(--settings-panel) 58%, transparent);
+}
+
+.settings-close:hover {
+  background: var(--settings-panel-hover);
+  opacity: 1 !important;
+}
+
+.settings-nav-button {
+  color: var(--settings-text);
+  opacity: 0.55;
+}
+
+.settings-nav-button:hover,
+.settings-nav-button:focus-visible {
+  background: var(--settings-panel);
+  opacity: 0.86;
+  outline: none;
+}
+
+.settings-nav-button.is-active {
+  color: var(--settings-text);
+  background: hsl(var(--primary) / 0.18);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.settings-theme-segment {
+  background: color-mix(in srgb, var(--settings-text) 7%, transparent);
+}
+
+.settings-theme-choice {
+  color: var(--settings-text);
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-theme-choice:hover,
+.settings-theme-choice:focus-visible {
+  background: var(--settings-panel-hover) !important;
+  outline: none;
+  opacity: 0.9 !important;
+}
+
+.settings-theme-choice.is-active {
+  color: var(--settings-text);
+  background: var(--settings-panel-hover) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+
+.settings-theme-choice.is-active svg {
+  color: hsl(var(--primary));
+}
+
+.settings-toggle {
+  align-self: start;
+  margin-top: -3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.settings-toggle-row + .settings-toggle-row {
+  border-top: 1px solid var(--settings-border);
+}
+
+.settings-content {
+  scrollbar-gutter: stable;
+}
+
+.font-option {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  content-visibility: auto;
+  contain-intrinsic-size: 32px;
+}
+
+.settings-input {
+  color: var(--settings-text);
+  background: var(--settings-panel);
+  border-color: var(--settings-border) !important;
+  caret-color: hsl(var(--primary));
+}
+
+.settings-input::placeholder {
+  color: color-mix(in srgb, var(--settings-text) 48%, transparent);
+}
+
+.settings-input:hover {
+  background: var(--settings-panel-hover);
+}
+
+.settings-input:focus {
+  border-color: hsl(var(--primary) / 0.58) !important;
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
+}
+
+.settings-range {
+  height: 18px;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--settings-text) 14%, transparent);
+}
+
+.settings-range::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid hsl(var(--background));
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 2px 8px hsl(var(--primary) / 0.34);
+}
+
+.settings-range:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.65);
+  outline-offset: 2px;
+}
+
+.settings-preview {
+  border-color: var(--settings-border) !important;
+}
+
+/* Preserve the note surfaces; suppress only ornamental grids and watermarks. */
+.docked-note-card::before,
+.note-window-root::before {
+  border: 0;
+  background: none;
+}
+
+.docked-note-card::after,
+.note-window-root::after {
+  display: none;
+}
+
+.docked-note-card.note-type-xlarge .docked-note-kind-badge,
+.note-window-root.note-type-xlarge .note-type-badge {
+  display: inline-flex;
+  max-width: 5.5em;
+  padding: 2px 5px;
+  overflow: hidden;
+  font-size: 0.52em;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docked-note-card.note-type-xlarge .docked-note-chip,
+.note-window-root.note-type-xlarge .note-title-tag {
+  display: none;
+}
+
+.docked-note-card.note-type-xlarge > div:first-child,
+.note-window-root.note-type-xlarge .note-window-titlebar {
+  padding: 5px 7px;
+}
+
+.note-window-root.note-type-xlarge .note-window-titlebar {
+  line-height: 1.15;
+}
+
+.note-window-title {
+  line-height: 1;
+}
+
+.docked-note-card.note-type-small > div:first-child,
+.note-window-root.note-type-small .note-window-titlebar {
+  padding: 4px 7px;
+}
+
+.note-type-xlarge .daily-nav-button,
+.note-type-xlarge .daily-today-button {
+  width: 24px !important;
+  min-width: 24px !important;
+}
+
+.note-type-xlarge .daily-date-display-compact {
+  padding-inline: 2px !important;
+  font-size: 0.76em;
+}
+
+.note-type-xlarge .daily-recurring-item,
+.note-type-xlarge .note-todo-item {
+  gap: 5px;
+  padding: 4px 5px;
+}
+
+.note-type-xlarge .daily-composer-wrap {
+  padding: 4px 6px;
+}
+
+.note-type-xlarge .daily-composer {
+  gap: 4px;
+  padding: 3px 5px !important;
+}
+
+.note-type-xlarge .daily-composer button {
+  width: 24px;
+  height: 24px;
+}
+
+.note-window-root.note-type-xlarge .note-todo-item > button:first-child,
+.note-window-root.note-type-xlarge .note-todo-item > button:last-child {
+  width: 20px;
+  height: 20px;
+}
+
+.note-window-root.note-type-small .note-todo-item > button:first-child,
+.note-window-root.note-type-small .note-todo-item > button:last-child,
+.note-window-root.note-type-small .note-composer-control > button {
+  width: 24px;
+  height: 24px;
+}
+
+.note-window-root.note-type-xlarge .echo-event-item {
+  gap: 6px;
+  padding: 6px;
+}
+
+.note-window-root.note-type-xlarge .echo-event-item > div:first-child {
+  width: clamp(34px, 1.4em, 44px);
+  padding-block: 3px;
+}
+
+.note-window-root.note-type-xlarge .echo-event-item > div:last-child {
+  width: 6px;
+  height: 6px;
+}
+
+@container (max-width: 260px) {
+  .note-window-titlebar {
+    padding: 5px 7px !important;
+  }
+
+  .note-window-titlebar .note-type-badge,
+  .note-window-titlebar .note-title-tag {
+    display: none;
+  }
+
+  .daily-todo-panel {
+    padding-inline: 6px;
+  }
+
+  .daily-date-switch {
+    gap: 2px;
+    padding-inline: 3px;
+  }
+
+  .daily-composer-wrap {
+    padding-inline: 6px;
+  }
+
+  .daily-empty-date {
+    width: 60px;
+    height: 38px;
+    margin-bottom: 4px;
+  }
+
+  .note-window-root.note-type-xlarge .note-composer-control {
+    gap: 4px;
+    min-height: 0;
+    padding: 4px 6px;
+  }
+
+  .note-window-root.note-type-xlarge .note-composer-control input {
+    min-width: 0;
+  }
+
+  .note-window-root.note-type-xlarge .note-composer-control > button {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+@media (max-height: 360px) {
+  .note-window-titlebar {
+    padding-block: 5px !important;
+  }
+
+  .daily-progress-row {
+    margin-bottom: 2px;
+  }
+
+  .daily-composer-wrap {
+    padding-block: 3px;
+  }
+}
+
+.settings-window button:focus-visible,
+.calendar-window button:focus-visible,
+.calendar-window [role="gridcell"]:focus-visible,
+.note-window-root button:focus-visible,
+.note-window-root [role="button"]:focus-visible,
+.docked-note-card button:focus-visible,
+.docked-note-card [role="button"]:focus-visible,
+.calendar-date-picker button:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.72);
+  outline-offset: 2px;
+}
+
+.calendar-window input:focus-visible,
+.calendar-window textarea:focus-visible,
+.note-window-root input:focus-visible,
+.note-window-root textarea:focus-visible,
+.docked-note-card input:focus-visible,
+.settings-window input:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.58);
+  outline-offset: 1px;
+}
+
+.day-context-action:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.72);
+  outline-offset: -2px;
 }
 
 .animate-note-in {
@@ -1133,22 +1930,34 @@ html.electron-transparent #root {
 @keyframes docked-note-attention {
   from {
     transform: translateY(0);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.30),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.08),
-      0 22px 58px rgba(4, 10, 24, 0.40);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
   }
   to {
     transform: translateY(-5px);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.36),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.08),
-      0 0 0 2px color-mix(in srgb, var(--note-accent) 62%, white 22%),
-      0 26px 70px color-mix(in srgb, var(--note-accent) 30%, rgba(4,10,24,0.42));
+    box-shadow: 0 24px 54px rgba(0, 0, 0, 0.36);
+  }
+}
+
+/* Keep the mouse-first desktop layout compact. On coarse pointers only, grow
+   the actual controls to a dependable touch target without changing typography
+   or introducing permanent empty padding for desktop users. */
+@media (pointer: coarse) {
+  .touch-target {
+    min-width: 44px !important;
+    min-height: 44px !important;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .calendar-window,
   .calendar-window .cal-main-content,
   .calendar-window [data-dock-area],
@@ -1162,5 +1971,12 @@ html.electron-transparent #root {
   .dock-empty-state {
     animation: none !important;
     transition: none !important;
+  }
+
+  .calendar-window *,
+  .note-window-root *,
+  .settings-window *,
+  .docked-note-card * {
+    scroll-behavior: auto !important;
   }
 }

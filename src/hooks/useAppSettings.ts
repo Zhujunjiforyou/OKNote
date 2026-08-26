@@ -6,9 +6,9 @@ type WindowType = 'calendar' | 'notes'
 const perWindowDefaults: PerWindowSettings = {
   fontFamily: 'Inter',
   fontSize: 14,
-  backgroundColor: '#08111F',
+  backgroundColor: '#1C1C1E',
   backgroundOpacity: 0.88,
-  textColor: '#EAF2FF',
+  textColor: '#F5F5F7',
 }
 
 /** Merge loaded settings with defaults to ensure all fields exist */
@@ -20,6 +20,7 @@ function mergeWithDefaults(raw: Record<string, unknown> | null | undefined): Per
     backgroundOpacity: typeof raw?.backgroundOpacity === 'number' ? raw.backgroundOpacity : perWindowDefaults.backgroundOpacity,
     textColor: typeof raw?.textColor === 'string' ? raw.textColor : perWindowDefaults.textColor,
     ...(raw?.edgeAutoHide !== undefined ? { edgeAutoHide: !!raw.edgeAutoHide } : {}),
+    ...(raw?.showDockArea !== undefined ? { showDockArea: !!raw.showDockArea } : {}),
   }
 }
 

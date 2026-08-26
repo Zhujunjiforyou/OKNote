@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNotesStore } from '@/stores/notes.store'
 import { useTagStore } from '@/stores/tag.store'
@@ -6,37 +6,48 @@ import type { Note } from '@/types/notes.types'
 import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
-import { CalendarCheck, Check, Plus, MoreHorizontal, Eye, ListTodo } from 'lucide-react'
-import { DailyTodoPanel } from '@/components/notes/DailyTodoPanel'
-import { NOTE_COLOR_PALETTE, hexToLuminance, normalizeHexColor } from '@/lib/utils'
-import { useAppSettings } from '@/hooks/useAppSettings'
+import { Plus, MoreHorizontal } from 'lucide-react'
+import { NOTE_COLOR_PALETTE, isLightColor, normalizeHexColor } from '@/lib/utils'
 import type { EventTag } from '@/types/tag.types'
+import type { PerWindowSettings } from '@/types/electron'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { reportPersistenceIssue } from '@/stores/persistence.store'
+import { clampFontSize, getAdaptiveDisplayFontSize } from '@/lib/typography'
+
+const DailyTodoPanel = lazy(() => import('@/components/notes/DailyTodoPanel').then((module) => ({ default: module.DailyTodoPanel })))
+
+export type DockedNoteDraftKind = 'quick-event' | 'note-title' | 'new-todo' | 'todo-edit' | 'date-edit'
 
 interface DockedNoteCardProps {
   note: Note
   isActive: boolean
   attention?: boolean
+  noteSettings: PerWindowSettings
+  previewOnly?: boolean
+  onDraftChange?: (key: string, kind: DockedNoteDraftKind, dirty: boolean) => void
 }
 
-export function DockedNoteCard({ note, isActive, attention = false }: DockedNoteCardProps) {
+export function DockedNoteCard({ note, isActive, attention = false, noteSettings, previewOnly = false, onDraftChange }: DockedNoteCardProps) {
   const updateNote = useNotesStore((s) => s.updateNote)
   const addItem = useNotesStore((s) => s.addItem)
   const deleteNote = useNotesStore((s) => s.deleteNote)
-  const getTagById = useTagStore((s) => s.getTagById)
   const tags = useTagStore((s) => s.tags)
-  const { settings: noteSettings } = useAppSettings('notes')
-
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [newTodo, setNewTodo] = useState('')
   const [showMenu, setShowMenu] = useState(false)
   const [showQuickEventForm, setShowQuickEventForm] = useState(false)
-  const [dragPreview, setDragPreview] = useState<{ x: number; y: number; outside: boolean } | null>(null)
+  const [quickEventDirty, setQuickEventDirty] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const menuBtnRef = useRef<HTMLButtonElement>(null)
   const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; dockRect: DOMRect; outside: boolean; moved: boolean; previewStarted: boolean } | null>(null)
+  const previewMoveFrameRef = useRef<number | null>(null)
+  const pendingPreviewMoveRef = useRef<{ x: number; y: number; outside: boolean } | null>(null)
+  const undockingRef = useRef(false)
 
   const isEcho = note.noteType === 'echo'
   const isDaily = note.noteType === 'daily'
@@ -46,23 +57,50 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
         : (note.echoTagId ? [note.echoTagId] : []))
     : []
   const selectedEchoTags = selectedEchoTagIds
-    .map((tagId) => getTagById(tagId))
+    .map((tagId) => tags.find((tag) => tag.id === tagId))
     .filter((tag): tag is EventTag => !!tag)
   const noteColor = normalizeHexColor(note.color)
+  const noteSurfaceColor = noteColor
   const noteOpacity = noteSettings.backgroundOpacity
-  const bgWithAlpha = noteColor + Math.round(noteOpacity * 255).toString(16).padStart(2, '0').slice(0, 2)
-  const lightBg = hexToLuminance(noteColor) > 0.58
+  const bgWithAlpha = noteSurfaceColor + Math.round(noteOpacity * 255).toString(16).padStart(2, '0').slice(0, 2)
+  const lightBg = isLightColor(noteSurfaceColor)
   const textColor = lightBg ? '#111827' : '#f8fafc'
   const mutedTextColor = lightBg ? 'rgba(17, 24, 39, 0.64)' : 'rgba(248, 250, 252, 0.70)'
   const panelBg = lightBg ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.13)'
   const panelBorder = lightBg ? 'rgba(17,24,39,0.13)' : 'rgba(255,255,255,0.17)'
+  const requestedNoteFontSize = clampFontSize(noteSettings.fontSize)
+  const displayNoteFontSize = getAdaptiveDisplayFontSize(requestedNoteFontSize)
+
+  const reportDraft = useCallback((key: string, kind: DockedNoteDraftKind, dirty: boolean) => {
+    if (!previewOnly) onDraftChange?.(`${note.id}:${key}`, kind, dirty)
+  }, [note.id, onDraftChange, previewOnly])
+
+  useEffect(() => {
+    reportDraft('title', 'note-title', editingTitle && titleDraft !== note.title)
+  }, [editingTitle, note.title, reportDraft, titleDraft])
+  useEffect(() => {
+    reportDraft('composer', 'new-todo', newTodo.trim().length > 0)
+  }, [newTodo, reportDraft])
+  useEffect(() => {
+    reportDraft('quick-event', 'quick-event', quickEventDirty)
+  }, [quickEventDirty, reportDraft])
+  useEffect(() => () => {
+    reportDraft('title', 'note-title', false)
+    reportDraft('composer', 'new-todo', false)
+    reportDraft('quick-event', 'quick-event', false)
+  }, [reportDraft])
+
+  const handleTodoDraftChange = useCallback((itemId: string, dirty: boolean) => {
+    reportDraft(`todo:${itemId}`, 'todo-edit', dirty)
+  }, [reportDraft])
+
+  const handleDailyDraftChange = useCallback((key: string, kind: 'new-todo' | 'todo-edit' | 'date-edit', dirty: boolean) => {
+    reportDraft(key, kind, dirty)
+  }, [reportDraft])
 
   const persistNote = useCallback((nextNote: Note) => {
     updateNote(nextNote)
-    if (window.electronAPI?.isElectron) {
-      window.electronAPI.saveAppData(`note_${note.id}`, nextNote)
-    }
-  }, [note.id, updateNote])
+  }, [updateNote])
 
   const startEditTitle = () => {
     setTitleDraft(note.title)
@@ -72,7 +110,7 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
 
   const saveTitle = () => {
     if (titleDraft.trim()) {
-      useNotesStore.getState().updateNote({ ...note, title: titleDraft.trim(), updatedAt: new Date().toISOString() })
+      useNotesStore.getState().updateNote({ ...note, title: titleDraft.trim().slice(0, 200), updatedAt: new Date().toISOString() })
     }
     setEditingTitle(false)
   }
@@ -83,38 +121,55 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
     setNewTodo('')
   }
 
-  const handleUndock = () => {
-    if (!window.electronAPI?.isElectron) return
-    const nextNote = { ...note, isDocked: false, updatedAt: new Date().toISOString() }
-    persistNote(nextNote)
-    window.electronAPI.undockNote(note.id, nextNote)
+  const handleUndock = async () => {
+    if (!window.electronAPI?.isElectron || undockingRef.current) return
+    undockingRef.current = true
     setShowMenu(false)
+    const nextNote = { ...note, isDocked: false, updatedAt: new Date().toISOString() }
+    try {
+      const result = await window.electronAPI.undockNote(note.id, nextNote)
+      if (!result.ok) {
+        if (result.canceled) return
+        reportPersistenceIssue('便签仍保留在挂载区', result.message || '取消挂载失败，请重试。', () => { void handleUndock() })
+      }
+    } catch (error) {
+      reportPersistenceIssue('便签仍保留在挂载区', error instanceof Error ? error.message : '主进程没有响应。', () => { void handleUndock() })
+    } finally {
+      undockingRef.current = false
+    }
   }
 
-  const undockAt = useCallback((clientX: number, clientY: number) => {
-    if (!window.electronAPI?.isElectron) return
+  const handleDeleteNote = () => {
+    setShowMenu(false)
+    setDeleteConfirmOpen(true)
+  }
+
+  const undockAt = useCallback(async (screenX: number, screenY: number) => {
+    if (!window.electronAPI?.isElectron || undockingRef.current) return
+    undockingRef.current = true
     const nextNote = { ...note, isDocked: false, updatedAt: new Date().toISOString() }
-    persistNote(nextNote)
-    window.electronAPI.undockNoteAt(
-      note.id,
-      Math.round(window.screenX + clientX - 110),
-      Math.round(window.screenY + clientY - 28),
-      nextNote,
-    )
-  }, [note, persistNote])
+    try {
+      const result = await window.electronAPI.undockNoteAt(
+        note.id,
+        Math.round(screenX - 110),
+        Math.round(screenY - 28),
+        nextNote,
+      )
+      if (!result.ok) {
+        if (result.canceled) return
+        reportPersistenceIssue('便签仍保留在挂载区', result.message || '拖出便签失败，请重试。', () => { void undockAt(screenX, screenY) })
+      }
+    } catch (error) {
+      reportPersistenceIssue('便签仍保留在挂载区', error instanceof Error ? error.message : '主进程没有响应。', () => { void undockAt(screenX, screenY) })
+    } finally {
+      undockingRef.current = false
+    }
+  }, [note])
 
   const updateColor = useCallback((color: string) => {
     persistNote({ ...note, color, updatedAt: new Date().toISOString() })
     setShowMenu(false)
   }, [note, persistNote])
-
-  const toggleEchoTag = useCallback((tagId: string) => {
-    if (!isEcho) return
-    const next = selectedEchoTagIds.includes(tagId)
-      ? selectedEchoTagIds.filter((id) => id !== tagId)
-      : [...selectedEchoTagIds, tagId]
-    persistNote({ ...note, viewTagIds: next, echoTagId: next[0], updatedAt: new Date().toISOString() })
-  }, [isEcho, note, persistNote, selectedEchoTagIds])
 
   const openMenu = useCallback(() => {
     if (menuBtnRef.current) {
@@ -142,6 +197,29 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [showMenu])
+
+  useEffect(() => () => {
+    if (previewMoveFrameRef.current != null) window.cancelAnimationFrame(previewMoveFrameRef.current)
+  }, [])
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setShowMenu(false)
+      window.requestAnimationFrame(() => menuBtnRef.current?.focus())
+      return
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    let targetIndex = currentIndex
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') targetIndex = (currentIndex + 1 + items.length) % items.length
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') targetIndex = (currentIndex - 1 + items.length) % items.length
+    else if (event.key === 'Home') targetIndex = 0
+    else if (event.key === 'End') targetIndex = items.length - 1
+    else return
+    event.preventDefault()
+    items[targetIndex]?.focus()
+  }
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || editingTitle) return
@@ -178,13 +256,21 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
       e.clientY > dockRect.bottom + 28
 
     dragState.outside = outsideDock && distance > 24
-    setDragPreview({ x: e.clientX, y: e.clientY, outside: dragState.outside })
+    setIsDragging(true)
     if (window.electronAPI?.isElectron) {
       if (!dragState.previewStarted) {
         dragState.previewStarted = true
         window.electronAPI.beginDockDragPreview(note, e.screenX, e.screenY)
       }
-      window.electronAPI.moveDockDragPreview(e.screenX, e.screenY, dragState.outside)
+      pendingPreviewMoveRef.current = { x: e.screenX, y: e.screenY, outside: dragState.outside }
+      if (previewMoveFrameRef.current == null) {
+        previewMoveFrameRef.current = window.requestAnimationFrame(() => {
+          previewMoveFrameRef.current = null
+          const pending = pendingPreviewMoveRef.current
+          pendingPreviewMoveRef.current = null
+          if (pending) window.electronAPI?.moveDockDragPreview(pending.x, pending.y, pending.outside)
+        })
+      }
     }
   }, [note])
 
@@ -192,20 +278,59 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
     const dragState = dragStateRef.current
     if (dragState?.pointerId === e.pointerId) {
       if (dragState.outside && dragState.moved) {
-        undockAt(e.clientX, e.clientY)
+        void undockAt(e.screenX, e.screenY)
       }
       if (window.electronAPI?.isElectron && dragState.previewStarted) {
+        if (previewMoveFrameRef.current != null) {
+          window.cancelAnimationFrame(previewMoveFrameRef.current)
+          previewMoveFrameRef.current = null
+        }
+        const pending = pendingPreviewMoveRef.current
+        pendingPreviewMoveRef.current = null
+        if (pending) window.electronAPI.moveDockDragPreview(pending.x, pending.y, pending.outside)
         window.electronAPI.endDockDragPreview()
       }
       dragStateRef.current = null
-      setDragPreview(null)
+      setIsDragging(false)
       try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
     }
   }, [undockAt])
 
+  if (previewOnly) {
+    return (
+      <div
+        className={`docked-note-card docked-note-card-inactive relative flex h-full flex-col overflow-hidden select-none ${requestedNoteFontSize <= 11 ? 'note-type-small' : requestedNoteFontSize >= 25 ? 'note-type-xlarge' : requestedNoteFontSize >= 19 ? 'note-type-large' : ''} ${requestedNoteFontSize >= 37 ? 'note-type-max' : ''}`}
+        aria-hidden="true"
+        style={{
+          backgroundColor: bgWithAlpha,
+          color: textColor,
+          fontFamily: `"${noteSettings.fontFamily}", system-ui, sans-serif`,
+          fontSize: displayNoteFontSize,
+          ['--note-font-size' as string]: `${displayNoteFontSize}px`,
+          ['--note-requested-font-size' as string]: requestedNoteFontSize,
+        }}
+      >
+        <div className="flex shrink-0 items-center gap-1.5 px-2 py-1.5">
+          <span className="min-w-0 flex-1 truncate text-[0.78em] font-medium">{note.title}</span>
+          {!isDaily && (
+            <span className={`docked-note-kind-badge shrink-0 px-1.5 py-0.5 text-[0.58em] ${isEcho ? 'docked-note-kind-badge-echo' : 'docked-note-kind-badge-independent'}`}>
+              {isEcho ? '视图' : '独立'}
+            </span>
+          )}
+        </div>
+        <div className="flex-1 overflow-hidden px-2.5 py-1 text-[0.7em] opacity-55">
+          {isEcho ? '事件视图' : (note.items || []).length > 0 ? (note.items || []).slice(0, 4).map((item) => (
+            <div key={item.id} className={`truncate py-0.5 ${item.isCompleted ? 'line-through opacity-50' : ''}`}>{item.content}</div>
+          )) : (isDaily ? '今日暂无事项' : '空白便签')}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
-      className={`docked-note-card relative flex flex-col h-full rounded-lg overflow-hidden select-none ${isEcho ? 'docked-note-card-echo' : isDaily ? 'docked-note-card-daily' : 'docked-note-card-independent'} ${isActive ? 'docked-note-card-active' : 'docked-note-card-inactive'} ${dragPreview ? 'docked-note-card-dragging' : ''} ${attention ? 'docked-note-card-attention' : ''}`}
+      data-note-id={note.id}
+      className={`docked-note-card relative flex flex-col h-full overflow-hidden ${isEcho ? 'docked-note-card-echo' : isDaily ? 'docked-note-card-daily' : 'docked-note-card-independent'} ${isActive ? 'docked-note-card-active' : 'docked-note-card-inactive'} ${isDragging ? 'docked-note-card-dragging' : ''} ${attention ? 'docked-note-card-attention' : ''} ${requestedNoteFontSize <= 11 ? 'note-type-small' : requestedNoteFontSize >= 25 ? 'note-type-xlarge' : requestedNoteFontSize >= 19 ? 'note-type-large' : ''} ${requestedNoteFontSize >= 37 ? 'note-type-max' : ''}`}
       style={{
         backgroundColor: bgWithAlpha,
         color: textColor,
@@ -216,12 +341,14 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
         ['--note-accent' as string]: noteColor,
         ['--note-shell' as string]: bgWithAlpha,
         fontFamily: `"${noteSettings.fontFamily}", system-ui, sans-serif`,
-        fontSize: noteSettings.fontSize,
+        fontSize: displayNoteFontSize,
+        ['--note-font-size' as string]: `${displayNoteFontSize}px`,
+        ['--note-requested-font-size' as string]: requestedNoteFontSize,
       }}
     >
       {/* Title bar */}
       <div
-        className="flex items-center justify-between px-2 py-1.5 shrink-0 cursor-grab active:cursor-grabbing"
+        className="flex items-center justify-between px-2 py-1.5 shrink-0 cursor-grab active:cursor-grabbing select-none"
         style={{ WebkitAppRegion: 'no-drag', touchAction: 'none' } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -229,31 +356,36 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
         onPointerCancel={handlePointerEnd}
       >
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: noteColor }} />
           {editingTitle ? (
             <input
               ref={titleInputRef}
               value={titleDraft}
+              maxLength={200}
               onChange={(e) => setTitleDraft(e.target.value)}
               onBlur={saveTitle}
               onKeyDown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
               className="flex-1 bg-white/10 rounded px-1 py-0 text-[0.78em] outline-none min-w-0"
+              aria-label="编辑挂载便签标题"
               data-no-card-drag
             />
           ) : (
             <span
               className="text-[0.78em] font-medium truncate cursor-pointer"
-              onDoubleClick={startEditTitle}
+              onClick={startEditTitle}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === 'F2') { event.preventDefault(); startEditTitle() } }}
               data-no-card-drag
-              title="双击编辑标题"
+              title="点击、Enter 或 F2 编辑标题"
+              role="button"
+              tabIndex={0}
             >
               {note.title}
             </span>
           )}
-          <span className={`text-[0.58em] px-1.5 py-0.5 shrink-0 inline-flex items-center gap-1 docked-note-kind-badge ${isEcho ? 'docked-note-kind-badge-echo' : isDaily ? 'docked-note-kind-badge-daily' : 'docked-note-kind-badge-independent'}`}>
-            {isEcho ? <Eye size={9} /> : isDaily ? <CalendarCheck size={9} /> : <ListTodo size={9} />}
-            {isEcho ? '视图' : isDaily ? '每日' : '独立'}
-          </span>
+          {!isDaily && (
+            <span className={`text-[0.58em] px-1.5 py-0.5 shrink-0 inline-flex items-center docked-note-kind-badge ${isEcho ? 'docked-note-kind-badge-echo' : 'docked-note-kind-badge-independent'}`}>
+              {isEcho ? '标签视图' : '独立'}
+            </span>
+          )}
           {isEcho && selectedEchoTags.length > 0 && (
             <span className="text-[0.6em] px-1.5 py-0.5 rounded-full shrink-0 docked-note-chip">
               {selectedEchoTags[0].name}
@@ -267,7 +399,9 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
           <button
             ref={menuBtnRef}
             onClick={(e) => { e.stopPropagation(); openMenu() }}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="touch-target h-7 w-7 rounded-md flex items-center justify-center hover:bg-white/10 transition-colors"
+            aria-label="打开便签菜单"
+            aria-expanded={showMenu}
           >
             <MoreHorizontal size={12} />
           </button>
@@ -275,20 +409,23 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
       </div>
 
       {isDaily ? (
-        <DailyTodoPanel
-          note={note}
-          compact
-          panelBg={panelBg}
-          panelBorder={panelBorder}
-          textColor={textColor}
-          mutedColor={mutedTextColor}
-          lightBg={lightBg}
-        />
+        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-[0.7em] opacity-40">加载每日待办…</div>}>
+          <DailyTodoPanel
+            note={note}
+            compact
+            panelBg={panelBg}
+            panelBorder={panelBorder}
+            textColor={textColor}
+            mutedColor={mutedTextColor}
+            lightBg={lightBg}
+            onDraftChange={handleDailyDraftChange}
+          />
+        </Suspense>
       ) : (
         <>
           {/* Body */}
           <div
-            className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-1.5"
+            className="docked-note-body flex-1 min-h-0 overflow-y-auto px-2.5 pb-1.5"
             data-note-wheel-scroll
             onWheel={(event) => event.stopPropagation()}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -298,13 +435,18 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
                 {showQuickEventForm && (
                   <QuickEventForm
                     note={note}
+                    surfaceColor={noteSurfaceColor}
+                    textColor={textColor}
                     onClose={closeQuickEventForm}
                     onSaved={closeQuickEventForm}
+                    onDirtyChange={setQuickEventDirty}
                   />
                 )}
                 <EchoEventList
                   note={note}
                   compact
+                  surfaceColor={noteSurfaceColor}
+                  textColor={textColor}
                   onSelectEvent={(event) => {
                     window.electronAPI?.openEventEditor(event)
                   }}
@@ -313,7 +455,7 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
             ) : (
               <div className="flex flex-col gap-0.5">
                 {(note.items || []).map((item) => (
-                  <TodoItem key={item.id} item={item} note={note} />
+                  <TodoItem key={item.id} item={item} note={note} onDraftChange={handleTodoDraftChange} />
                 ))}
                 {(note.items || []).length === 0 && (
                   <div className="py-6 text-center text-[0.7em] opacity-20">暂无待办</div>
@@ -323,7 +465,7 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
           </div>
 
           {/* Footer */}
-          <div className="px-2.5 py-1.5 shrink-0 border-t" style={{ borderColor: panelBorder, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <div className="docked-note-footer px-2.5 py-1.5 shrink-0 border-t" style={{ borderColor: panelBorder, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {isEcho ? (
               <button
                 onClick={() => {
@@ -337,15 +479,20 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
               <div className="flex gap-1">
                 <input
                   value={newTodo}
+                  maxLength={2000}
                   onChange={(e) => setNewTodo(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+                  onBlur={handleAddTodo}
                   placeholder="添加待办..."
                   className="flex-1 docked-note-input rounded-md px-2 py-1.5 text-[0.7em] outline-none placeholder:opacity-70"
+                  aria-label="待办内容"
                 />
                 <button
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={handleAddTodo}
                   disabled={!newTodo.trim()}
                   className="px-2 py-1 rounded-md docked-note-input transition-colors disabled:opacity-35"
+                  aria-label="添加待办"
                 >
                   <Plus size={12} />
                 </button>
@@ -359,9 +506,12 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
       {showMenu && createPortal(
         <div className="fixed inset-0 z-[9999]" onClick={() => setShowMenu(false)}>
           <div
-            className="absolute w-48 bg-background/95 backdrop-blur-xl border border-white/8 rounded-lg shadow-2xl py-1 z-[10000]"
+            className="absolute max-h-[calc(100vh-16px)] w-48 overflow-y-auto bg-background/95 backdrop-blur-xl border border-white/8 rounded-lg shadow-2xl py-1 z-[10000]"
             style={{ top: menuPos.top, left: menuPos.left }}
             onClick={(e) => e.stopPropagation()}
+            role="menu"
+            aria-label="便签操作"
+            onKeyDown={handleMenuKeyDown}
           >
             <div className="px-3 py-2">
               <div className="flex gap-1.5 flex-wrap">
@@ -369,12 +519,16 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
                   <button
                     key={color}
                     onClick={() => updateColor(color)}
-                    className={`h-4 w-4 rounded-full transition-transform hover:scale-125 ${color === noteColor ? 'ring-2 ring-white/70 ring-offset-1 ring-offset-background' : ''}`}
+                    className={`touch-target h-6 w-6 rounded-full transition-transform hover:scale-110 ${color === noteColor ? 'ring-2 ring-white/70 ring-offset-1 ring-offset-background' : ''}`}
                     style={{
                       backgroundColor: color,
                       boxShadow: 'inset 0 0 0 1px rgba(15,23,42,0.18), 0 0 0 1px rgba(255,255,255,0.20)',
                     }}
                     title="更换颜色"
+                    aria-label={`将便签颜色设为 ${color}`}
+                    role="menuitemradio"
+                    aria-checked={color === noteColor}
+                    autoFocus={color === NOTE_COLOR_PALETTE[0]}
                   />
                 ))}
               </div>
@@ -382,45 +536,44 @@ export function DockedNoteCard({ note, isActive, attention = false }: DockedNote
             {isEcho && (
               <>
                 <div className="border-t my-1" style={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-                <div className="px-3 py-1">
-                  <div className="text-[0.62em] opacity-30 mb-1">视图标签</div>
-                  <div className="space-y-0.5 max-h-28 overflow-y-auto">
-                    {tags.map((tag) => (
-                      <button
-                        key={tag.id}
-                        onClick={() => toggleEchoTag(tag.id)}
-                        className={`w-full text-left px-2 py-1 text-[0.72em] rounded flex items-center gap-1.5 hover:bg-white/5 transition-colors ${selectedEchoTagIds.includes(tag.id) ? 'bg-white/10 opacity-90' : ''}`}
-                      >
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
-                        <span className="truncate flex-1">{tag.name}</span>
-                        {selectedEchoTagIds.includes(tag.id) && <Check size={10} className="opacity-55" />}
-                      </button>
-                    ))}
-                    {tags.length === 0 && (
-                      <div className="px-2 py-1 text-[0.68em] opacity-25">暂无标签，请先在设置中创建</div>
-                    )}
-                  </div>
+                <div className="px-3 py-1.5">
+                  <div className="text-[0.62em] opacity-35">绑定标签</div>
+                  <div className="mt-0.5 truncate text-[0.72em] opacity-70">{selectedEchoTags.map((tag) => tag.name).join('、') || '标签已删除'}</div>
                 </div>
               </>
             )}
             <div className="border-t my-1" style={{ borderColor: 'rgba(255,255,255,0.06)' }} />
             <button
               onClick={handleUndock}
-              className="w-full text-left px-3 py-1.5 text-[0.75em] hover:bg-white/5 transition-colors"
+              className="touch-target min-h-8 w-full text-left px-3 py-1.5 text-[0.75em] hover:bg-white/5 transition-colors"
+              role="menuitem"
             >
               取消挂载
             </button>
             <div className="border-t my-1" style={{ borderColor: 'rgba(255,255,255,0.06)' }} />
             <button
-              onClick={() => { deleteNote(note.id); window.electronAPI?.deleteNote(note.id); setShowMenu(false) }}
-              className="w-full text-left px-3 py-1.5 text-[0.75em] text-red-400 hover:bg-white/5 transition-colors"
+              onClick={handleDeleteNote}
+              className="touch-target min-h-8 w-full text-left px-3 py-1.5 text-[0.75em] text-red-400 hover:bg-white/5 transition-colors"
+              role="menuitem"
             >
-              删除便签
+              移入回收站
             </button>
           </div>
         </div>,
         document.body
       )}
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="将便签移入回收站？"
+        description={`“${note.title}”会从日历挂载区移除，可稍后在设置的“便签管理”中恢复。`}
+        confirmLabel="移入回收站"
+        destructive
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          setDeleteConfirmOpen(false)
+          deleteNote(note.id)
+        }}
+      />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
 import { CalendarEvent } from '@/types/calendar.types'
@@ -7,10 +7,13 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Bell, Repeat, Trash2, X } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { EVENT_COLOR_PALETTE, generateId } from '@/lib/utils'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 interface EventFormProps {
   onClose: () => void
   initialMultiDay?: boolean
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 type RecurrenceMode = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
@@ -45,11 +48,22 @@ function recurrenceUnitLabel(mode: RecurrenceMode): string {
 
 function weekdayFromDateKey(dateStr: string): number {
   const [year, month, day] = dateStr.split('-').map(Number)
-  return new Date(year, month - 1, day).getDay()
+  const date = new Date(0)
+  date.setHours(0, 0, 0, 0)
+  date.setFullYear(year, month - 1, day)
+  return date.getDay()
 }
 
 function monthDayFromDateKey(dateStr: string): number {
   return Math.min(31, Math.max(1, Number(dateStr.slice(8, 10)) || 1))
+}
+
+function openNativeTimePicker(input: HTMLInputElement) {
+  try {
+    input.showPicker?.()
+  } catch {
+    input.focus()
+  }
 }
 
 function normalizeWeekdays(days: number[]): number[] {
@@ -57,7 +71,51 @@ function normalizeWeekdays(days: number[]): number[] {
     .sort((a, b) => a - b)
 }
 
-export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) {
+interface EventDraftFingerprint {
+  title: string
+  startDate: string
+  endDate: string
+  startTime: string
+  endTime: string
+  isAllDay: boolean
+  isMultiDay: boolean
+  color: string
+  description: string
+  tagId: string | null
+  recurrenceMode: RecurrenceMode
+  recurrenceInterval: number
+  recurrenceWeekdays: number[]
+  recurrenceMonthDay: number
+  recurrenceUntil: string
+  reminderEnabled: boolean
+  reminderMinutes: number
+  reminderPlaySound: boolean
+}
+
+function fingerprintDraft(draft: EventDraftFingerprint): string {
+  return JSON.stringify([
+    draft.title,
+    draft.startDate,
+    draft.endDate,
+    draft.startTime,
+    draft.endTime,
+    draft.isAllDay,
+    draft.isMultiDay,
+    draft.color,
+    draft.description,
+    draft.tagId,
+    draft.recurrenceMode,
+    draft.recurrenceInterval,
+    normalizeWeekdays(draft.recurrenceWeekdays),
+    draft.recurrenceMonthDay,
+    draft.recurrenceUntil,
+    draft.reminderEnabled,
+    draft.reminderMinutes,
+    draft.reminderPlaySound,
+  ])
+}
+
+export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: EventFormProps) {
   const editingEvent = useCalendarStore((s) => s.editingEvent)
   const addEvent = useCalendarStore((s) => s.addEvent)
   const updateEvent = useCalendarStore((s) => s.updateEvent)
@@ -83,57 +141,133 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
   const [reminderMinutes, setReminderMinutes] = useState(10)
   const [reminderPlaySound, setReminderPlaySound] = useState(false)
   const [error, setError] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [confirmAction, setConfirmAction] = useState<'discard' | 'delete' | null>(null)
+  const dialogRef = useDialogFocusTrap(confirmAction === null)
+  const baselineFingerprintRef = useRef('')
+  const initializedRef = useRef(false)
 
   const tags = useTagStore((s) => s.tags)
-  const getTagById = useTagStore((s) => s.getTagById)
 
   useEffect(() => {
-    if (editingEvent) {
-      setTitle(editingEvent.title)
-      setStartDate(editingEvent.startDate)
-      const hasEnd = !!(editingEvent.endDate && editingEvent.endDate !== editingEvent.startDate)
-      setIsMultiDay(hasEnd)
-      setEndDate(editingEvent.endDate || editingEvent.startDate)
-      setStartTime(editingEvent.startTime || '')
-      setEndTime(editingEvent.endTime || '')
-      setIsAllDay(editingEvent.isAllDay)
-      setColor(editingEvent.color)
-      setDescription(editingEvent.description)
-      setTagId(editingEvent.tagId || null)
-      setRecurrenceMode(editingEvent.recurrence?.freq || 'none')
-      setRecurrenceInterval(editingEvent.recurrence?.interval || 1)
-      setRecurrenceWeekdays(editingEvent.recurrence?.byWeekday?.length
-        ? editingEvent.recurrence.byWeekday
-        : [weekdayFromDateKey(editingEvent.startDate)])
-      setRecurrenceMonthDay(editingEvent.recurrence?.byMonthDay?.[0] || monthDayFromDateKey(editingEvent.startDate))
-      setRecurrenceUntil(editingEvent.recurrence?.until || '')
-      setReminderEnabled(editingEvent.reminder?.enabled === true)
-      setReminderMinutes(editingEvent.reminder?.minutesBefore ?? 10)
-      setReminderPlaySound(editingEvent.reminder?.playSound === true)
-    } else {
-      const y = currentDate.getFullYear()
-      const m = String(currentDate.getMonth() + 1).padStart(2, '0')
-      const d = String(currentDate.getDate()).padStart(2, '0')
-      const dateStr = `${y}-${m}-${d}`
-      setStartDate(dateStr)
-      setEndDate(dateStr)
-      setRecurrenceMode('none')
-      setRecurrenceInterval(1)
-      setRecurrenceWeekdays([weekdayFromDateKey(dateStr)])
-      setRecurrenceMonthDay(monthDayFromDateKey(dateStr))
-      setRecurrenceUntil('')
-      setReminderEnabled(false)
-      setReminderMinutes(10)
-      setReminderPlaySound(false)
-    }
-  }, [editingEvent, currentDate])
+    const dialog = dialogRef.current
+    if (!dialog) return
+    if (confirmAction !== null) dialog.setAttribute('inert', '')
+    else dialog.removeAttribute('inert')
+    return () => dialog.removeAttribute('inert')
+  }, [confirmAction, dialogRef])
 
-  const handleSave = () => {
+  useEffect(() => {
+    const y = currentDate.getFullYear()
+    const m = String(currentDate.getMonth() + 1).padStart(2, '0')
+    const d = String(currentDate.getDate()).padStart(2, '0')
+    const fallbackDate = `${y}-${m}-${d}`
+    const eventDate = editingEvent?.startDate || fallbackDate
+    const hasEnd = !!(editingEvent?.endDate && editingEvent.endDate !== editingEvent.startDate)
+    const next: EventDraftFingerprint = {
+      title: editingEvent?.title || '',
+      startDate: eventDate,
+      endDate: editingEvent?.endDate || eventDate,
+      startTime: editingEvent?.startTime || '',
+      endTime: editingEvent?.endTime || '',
+      isAllDay: editingEvent?.isAllDay === true,
+      isMultiDay: editingEvent ? hasEnd : initialMultiDay,
+      color: editingEvent?.color || '#2563EB',
+      description: editingEvent?.description || '',
+      tagId: editingEvent?.tagId || null,
+      recurrenceMode: editingEvent?.recurrence?.freq || 'none',
+      recurrenceInterval: editingEvent?.recurrence?.interval || 1,
+      recurrenceWeekdays: editingEvent?.recurrence?.byWeekday?.length
+        ? editingEvent.recurrence.byWeekday
+        : [weekdayFromDateKey(eventDate)],
+      recurrenceMonthDay: editingEvent?.recurrence?.byMonthDay?.[0] || monthDayFromDateKey(eventDate),
+      recurrenceUntil: editingEvent?.recurrence?.until || '',
+      reminderEnabled: editingEvent?.reminder?.enabled === true,
+      reminderMinutes: editingEvent?.reminder?.minutesBefore ?? 10,
+      reminderPlaySound: editingEvent?.reminder?.playSound === true,
+    }
+    setTitle(next.title)
+    setStartDate(next.startDate)
+    setEndDate(next.endDate)
+    setStartTime(next.startTime)
+    setEndTime(next.endTime)
+    setIsAllDay(next.isAllDay)
+    setIsMultiDay(next.isMultiDay)
+    setColor(next.color)
+    setDescription(next.description)
+    setTagId(next.tagId)
+    setRecurrenceMode(next.recurrenceMode)
+    setRecurrenceInterval(next.recurrenceInterval)
+    setRecurrenceWeekdays(next.recurrenceWeekdays)
+    setRecurrenceMonthDay(next.recurrenceMonthDay)
+    setRecurrenceUntil(next.recurrenceUntil)
+    setReminderEnabled(next.reminderEnabled)
+    setReminderMinutes(next.reminderMinutes)
+    setReminderPlaySound(next.reminderPlaySound)
+    setError('')
+    baselineFingerprintRef.current = fingerprintDraft(next)
+    initializedRef.current = true
+  // A live events refresh often replaces the event object with an equivalent
+  // instance. Reinitialize only when the form switches to another event; a
+  // date rollover or same-event refresh must never overwrite typed input.
+  }, [editingEvent?.id, initialMultiDay])
+
+  const currentFingerprint = fingerprintDraft({
+    title,
+    startDate,
+    endDate,
+    startTime,
+    endTime,
+    isAllDay,
+    isMultiDay,
+    color,
+    description,
+    tagId,
+    recurrenceMode,
+    recurrenceInterval,
+    recurrenceWeekdays,
+    recurrenceMonthDay,
+    recurrenceUntil,
+    reminderEnabled,
+    reminderMinutes,
+    reminderPlaySound,
+  })
+  const isDirty = initializedRef.current && currentFingerprint !== baselineFingerprintRef.current
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+
+  const requestClose = useCallback(() => {
+    if (confirmAction || isSaving) return
+    if (isDirty) {
+      setConfirmAction('discard')
+      return
+    }
+    onClose()
+  }, [confirmAction, isDirty, isSaving, onClose])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !confirmAction) requestClose()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [confirmAction, requestClose])
+
+  const handleSave = async () => {
+    if (isSaving) return
     const trimmedTitle = title.trim()
     if (!trimmedTitle) { setError('请输入事件标题'); return }
     if (trimmedTitle.length > 200) { setError('标题不能超过200个字符'); return }
     if (!startDate) { setError('请选择开始日期'); return }
     if (isMultiDay && endDate && endDate < startDate) { setError('结束日期不能早于开始日期'); return }
+    const effectiveEndDate = isMultiDay ? (endDate || startDate) : startDate
+    if (!isAllDay && endTime && !startTime) { setError('设置结束时间前，请先选择开始时间'); return }
+    if (!isAllDay && startTime && endTime && effectiveEndDate === startDate && endTime < startTime) { setError('结束时间不能早于开始时间'); return }
+    if (reminderEnabled && !isAllDay && !startTime) { setError('设置提醒前，请先选择开始时间'); return }
     if (recurrenceMode !== 'none' && recurrenceUntil && recurrenceUntil < startDate) { setError('循环结束日期不能早于开始日期'); return }
     const safeWeekdays = normalizeWeekdays(recurrenceWeekdays)
     if (recurrenceMode === 'weekly' && safeWeekdays.length === 0) { setError('请选择每周循环的星期'); return }
@@ -170,12 +304,24 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
       updatedAt: new Date().toISOString(),
     }
 
-    if (editingEvent) {
-      updateEvent(eventData)
-    } else {
-      addEvent(eventData)
+    setIsSaving(true)
+    try {
+      const result = editingEvent
+        ? await updateEvent(eventData)
+        : await addEvent(eventData)
+      if (!result.ok) {
+        setError(result.code === 'conflict'
+          ? `${result.message || '事件已在其他窗口被修改。'} 当前表单草稿仍保留，请核对后再处理。`
+          : `${result.message || '事件未能写入磁盘。'} 当前表单草稿仍保留。`)
+        return
+      }
+      baselineFingerprintRef.current = currentFingerprint
+      onClose()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '保存失败，当前表单草稿仍保留。')
+    } finally {
+      setIsSaving(false)
     }
-    onClose()
   }
 
   return (
@@ -184,30 +330,43 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <motion.div
+        ref={dialogRef}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.15 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-[420px] max-h-[85vh] overflow-auto"
-        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && title.trim()) { e.preventDefault(); handleSave() } }}
+        className="w-[420px] max-h-[calc(100vh-12px)] max-w-[calc(100vw-12px)] overflow-auto"
+        onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && title.trim()) { e.preventDefault(); void handleSave() } }}
+        role="dialog"
+        aria-modal={confirmAction === null ? 'true' : undefined}
+        aria-hidden={confirmAction !== null ? 'true' : undefined}
+        aria-labelledby="event-form-title"
+        aria-busy={isSaving}
       >
         <Card className="border shadow-lg">
           <div className="h-1 rounded-t-xl" style={{ backgroundColor: color }} />
+          <fieldset disabled={isSaving} className="contents">
           <CardContent className="pt-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-base font-semibold">
-                {editingEvent ? '编辑事件' : (isMultiDay ? '新建跨日事件' : '新建事件')}
+              <h2 id="event-form-title" className="text-base font-semibold">
+                {editingEvent ? (editingEvent.recurrence ? '编辑循环系列' : '编辑事件') : (isMultiDay ? '新建跨日事件' : '新建事件')}
               </h2>
-              <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent">
+              <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent" aria-label="关闭事件表单">
                 <X size={15} />
               </button>
             </div>
 
+            {editingEvent?.recurrence && (
+              <p className="-mt-2 mb-3 text-xs leading-relaxed text-muted-foreground">
+                此处修改或删除会作用于整个循环系列。
+              </p>
+            )}
+
             {error && (
-              <div className="mb-3 px-3 py-2 rounded-md text-xs bg-destructive/10 text-destructive border border-destructive/20">
+              <div className="mb-3 px-3 py-2 rounded-md text-xs bg-destructive/10 text-destructive border border-destructive/20" role="alert">
                 {error}
               </div>
             )}
@@ -215,12 +374,17 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
             <div className="space-y-3">
               {/* Title */}
               <input
+                id="event-title"
                 type="text"
+                aria-label="事件标题"
+                aria-required="true"
                 value={title}
+                maxLength={200}
                 onChange={(e) => { setTitle(e.target.value); setError('') }}
                 placeholder="事件标题"
                 className="w-full bg-transparent text-sm border-b border-border pb-2 outline-none focus:border-primary transition-colors placeholder:text-muted-foreground"
                 autoFocus
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void handleSave() } }}
               />
 
               {/* Multi-day toggle */}
@@ -237,39 +401,58 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
               {/* Date range */}
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                  <label className="text-xs text-muted-foreground w-10 shrink-0">开始</label>
+                  <label htmlFor="event-start-date" className="text-xs text-muted-foreground w-10 shrink-0">开始</label>
                   <input
+                    id="event-start-date"
                     type="date"
+                    min="1900-01-01"
+                    max="2100-12-31"
                     value={startDate}
                     onChange={(e) => { setStartDate(e.target.value); setError('') }}
                     className="flex-1 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
                   />
                   {!isAllDay && (
-                    <input
-                      type="time"
-                      value={startTime}
-                      onChange={(e) => setStartTime(e.target.value)}
-                      className="w-28 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-                    />
+                    <>
+                      <label htmlFor="event-start-time" className="sr-only">开始时间</label>
+                      <input
+                        id="event-start-time"
+                        type="time"
+                        value={startTime}
+                        onChange={(e) => { setStartTime(e.target.value); setError('') }}
+                        onClick={(event) => openNativeTimePicker(event.currentTarget)}
+                        className="event-time-input w-28 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                      />
+                    </>
                   )}
                 </div>
-                {isMultiDay && (
+                {(isMultiDay || !isAllDay) && (
                   <div className="flex items-center gap-2">
-                    <label className="text-xs text-muted-foreground w-10 shrink-0">结束</label>
-                    <input
-                      type="date"
-                      value={endDate}
-                      onChange={(e) => { setEndDate(e.target.value); setError('') }}
-                      min={startDate}
-                      className="flex-1 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-                    />
-                    {!isAllDay && (
+                    <label htmlFor={isMultiDay ? 'event-end-date' : 'event-end-time'} className="text-xs text-muted-foreground w-10 shrink-0">结束</label>
+                    {isMultiDay ? (
                       <input
-                        type="time"
-                        value={endTime}
-                        onChange={(e) => setEndTime(e.target.value)}
-                        className="w-28 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                        id="event-end-date"
+                        type="date"
+                        min={startDate || '1900-01-01'}
+                        max="2100-12-31"
+                        value={endDate}
+                        onChange={(e) => { setEndDate(e.target.value); setError('') }}
+                        className="flex-1 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
                       />
+                    ) : (
+                      <span className="flex-1 px-3 text-xs text-muted-foreground">同日</span>
+                    )}
+                    {!isAllDay && (
+                      <>
+                        <label htmlFor="event-end-time" className="sr-only">结束时间</label>
+                        <input
+                          id="event-end-time"
+                          type="time"
+                          value={endTime}
+                          onChange={(e) => { setEndTime(e.target.value); setError('') }}
+                          onClick={(event) => openNativeTimePicker(event.currentTarget)}
+                          className="event-time-input w-28 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                        />
+                      </>
                     )}
                   </div>
                 )}
@@ -288,12 +471,13 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
 
               {/* Recurrence */}
               <div className="rounded-lg border border-border/70 p-3 space-y-2">
-                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <label htmlFor="event-recurrence-mode" className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <Repeat size={13} />
-                  循环
-                </div>
+                  循环方式
+                </label>
                 <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
                   <select
+                    id="event-recurrence-mode"
                     value={recurrenceMode}
                     onChange={(e) => {
                       const mode = e.target.value as RecurrenceMode
@@ -335,6 +519,8 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                           type="button"
                           onClick={() => setRecurrenceWeekdays((prev) => active ? prev.filter((value) => value !== day.value) : [...prev, day.value])}
                           className={`h-7 w-7 rounded-md text-xs transition-colors ${active ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground hover:text-foreground'}`}
+                          aria-pressed={active}
+                          aria-label={`每周${day.label}`}
                         >
                           {day.label}
                         </button>
@@ -346,23 +532,27 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">每月</span>
                     <input
+                      id="event-recurrence-month-day"
                       type="number"
                       min={1}
                       max={31}
                       value={recurrenceMonthDay}
                       onChange={(e) => setRecurrenceMonthDay(Number(e.target.value) || 1)}
                       className="w-20 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                      aria-label="每月循环日期"
                     />
                     <span className="text-xs text-muted-foreground">号</span>
                   </div>
                 )}
                 {recurrenceMode !== 'none' && (
                   <div className="flex items-center gap-2">
-                    <label className="text-xs text-muted-foreground w-14 shrink-0">结束</label>
+                    <label htmlFor="event-recurrence-until" className="text-xs text-muted-foreground w-14 shrink-0">循环至</label>
                     <input
+                      id="event-recurrence-until"
                       type="date"
                       value={recurrenceUntil}
                       min={startDate}
+                      max="2100-12-31"
                       onChange={(e) => setRecurrenceUntil(e.target.value)}
                       className="flex-1 bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
                     />
@@ -385,6 +575,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                 {reminderEnabled && (
                   <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
                     <select
+                      id="event-reminder-time"
                       value={reminderMinutes}
                       onChange={(e) => setReminderMinutes(Number(e.target.value))}
                       className="bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
@@ -393,6 +584,7 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
+                    <label htmlFor="event-reminder-time" className="sr-only">提醒时间</label>
                     <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                       <input
                         type="checkbox"
@@ -404,6 +596,12 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                     </label>
                   </div>
                 )}
+                {reminderEnabled && isAllDay && (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">全天事件按当天 09:00 计算提醒时间。</p>
+                )}
+                {reminderEnabled && !isAllDay && !startTime && (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">请先设置开始时间；未设置时不会创建提醒。</p>
+                )}
               </div>
 
               {/* Color picker */}
@@ -414,13 +612,14 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
                     <button
                       key={c}
                       onClick={() => setColor(c)}
-                      className={`w-6 h-6 rounded-full border-2 transition-all ${
+                      className={`touch-target w-6 h-6 rounded-full border-2 transition-all ${
                         color === c ? 'border-foreground scale-110' : 'border-transparent hover:scale-105'
                       }`}
                       style={{
                         backgroundColor: c,
                         boxShadow: 'inset 0 0 0 1px rgba(15,23,42,0.18), 0 0 0 1px rgba(255,255,255,0.20)',
                       }}
+                      aria-label={`将事件颜色设为 ${c}`}
                     />
                   ))}
                 </div>
@@ -428,13 +627,14 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
 
               {/* Tag selector */}
               <div>
-                <p className="text-xs text-muted-foreground mb-1.5">分类标签</p>
+                <label htmlFor="event-tag" className="block text-xs text-muted-foreground mb-1.5">分类标签</label>
                 <select
+                  id="event-tag"
                   value={tagId || ''}
                   onChange={(e) => {
                     const id = e.target.value || null
                     setTagId(id)
-                    const tag = id ? getTagById(id) : null
+                    const tag = id ? tags.find((item) => item.id === id) : null
                     if (tag) setColor(tag.color)
                   }}
                   className="w-full bg-secondary rounded-md px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-ring"
@@ -449,8 +649,11 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
               </div>
 
               {/* Description */}
+              <label htmlFor="event-description" className="block text-xs text-muted-foreground">事件描述</label>
               <textarea
+                id="event-description"
                 value={description}
+                maxLength={2000}
                 onChange={(e) => { setDescription(e.target.value); setError('') }}
                 placeholder="添加描述..."
                 rows={2}
@@ -459,28 +662,45 @@ export function EventForm({ onClose, initialMultiDay = false }: EventFormProps) 
             </div>
 
             {/* Actions */}
-            <div className="flex gap-2 mt-5 pt-4 border-t border-border">
+            <div className="sticky bottom-0 z-10 -mx-5 mt-4 flex gap-2 border-t border-border bg-card px-5 py-3">
               {editingEvent && (
                 <Button
                   variant="destructive"
                   size="sm"
                   className="gap-1.5"
-                  onClick={() => {
-                    deleteEvent(editingEvent.id)
-                    onClose()
-                  }}
+                  onClick={() => setConfirmAction('delete')}
                 >
                   <Trash2 size={13} />
-                  删除
+                  {editingEvent.recurrence ? '删除系列' : '删除'}
                 </Button>
               )}
               <div className="flex-1" />
-              <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
-              <Button size="sm" onClick={handleSave}>保存</Button>
+              <Button variant="ghost" size="sm" onClick={requestClose}>取消</Button>
+              <Button size="sm" onClick={() => { void handleSave() }}>{isSaving ? '保存中…' : '保存'}</Button>
             </div>
           </CardContent>
+          </fieldset>
         </Card>
       </motion.div>
+      <ConfirmDialog
+        open={confirmAction !== null}
+        title={confirmAction === 'delete'
+          ? (editingEvent?.recurrence ? '删除整个循环系列？' : '删除这个事件？')
+          : '放弃未保存的修改？'}
+        description={confirmAction === 'delete'
+          ? (editingEvent?.recurrence
+              ? `“${editingEvent.title || '未命名事件'}”的全部循环实例都会被删除，且无法撤销。`
+              : `“${editingEvent?.title || title.trim() || '未命名事件'}”删除后无法撤销。`)
+          : '当前草稿尚未保存，放弃后本次修改将不会保留。'}
+        confirmLabel={confirmAction === 'delete' ? (editingEvent?.recurrence ? '删除整个系列' : '删除事件') : '放弃修改'}
+        destructive
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => {
+          if (confirmAction === 'delete' && editingEvent) deleteEvent(editingEvent.id)
+          setConfirmAction(null)
+          onClose()
+        }}
+      />
     </motion.div>
   )
 }

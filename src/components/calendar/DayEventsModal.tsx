@@ -1,8 +1,10 @@
+import { useEffect } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
-import { filterEventsByDate, getEventInstanceKey } from '@/lib/utils'
-import { X, Tag } from 'lucide-react'
+import { compareCalendarEventStart, filterEventsByDate, getEventInstanceKey } from '@/lib/utils'
+import { X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface DayEventsModalProps {
   isOpen: boolean
@@ -10,11 +12,18 @@ interface DayEventsModalProps {
 }
 
 export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
+  const dialogRef = useDialogFocusTrap(isOpen)
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const tags = useTagStore((s) => s.tags)
-  const getTagById = useTagStore((s) => s.getTagById)
+
+  useEffect(() => {
+    if (!isOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [isOpen, onClose])
 
   const y = currentDate.getFullYear()
   const m = String(currentDate.getMonth() + 1).padStart(2, '0')
@@ -22,12 +31,7 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
   const dateStr = `${y}-${m}-${d}`
 
   const dayEvents = filterEventsByDate(events, dateStr)
-  const sortedDayEvents = [...dayEvents].sort((a, b) => {
-    if (a.startTime && !b.startTime) return -1
-    if (!a.startTime && b.startTime) return 1
-    if (a.startTime && b.startTime) return a.startTime.localeCompare(b.startTime)
-    return 0
-  })
+  const sortedDayEvents = [...dayEvents].sort(compareCalendarEventStart)
 
   return (
     <AnimatePresence>
@@ -40,19 +44,24 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
           onClick={onClose}
         >
           <motion.div
+            ref={dialogRef}
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
             onClick={(e) => e.stopPropagation()}
             className="w-[380px] max-h-[75vh] overflow-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="day-events-title"
           >
             <div className="bg-background/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl">
               <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-                <h2 className="text-sm font-semibold">{y}年{m}月{d}日 事件</h2>
+                <h2 id="day-events-title" className="text-sm font-semibold">{y}年{m}月{d}日 事件</h2>
                 <button
                   onClick={onClose}
-                  className="w-6 h-6 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-colors"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-colors"
+                  aria-label="关闭当日事件"
                 >
                   <X size={14} />
                 </button>
@@ -64,12 +73,12 @@ export function DayEventsModal({ isOpen, onClose }: DayEventsModalProps) {
                 ) : (
                   <div className="space-y-1.5">
                     {sortedDayEvents.map((event) => {
-                      const evTag = event.tagId ? getTagById(event.tagId) : null
+                      const evTag = event.tagId ? tags.find((tag) => tag.id === event.tagId) : null
                       return (
                       <button
                         key={getEventInstanceKey(event)}
                         onClick={() => {
-                          selectEvent(event.seriesId || event.id)
+                          selectEvent(event.seriesId || event.id, event.occurrenceDate || event.startDate)
                           onClose()
                         }}
                         className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors flex items-center gap-3"

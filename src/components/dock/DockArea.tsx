@@ -1,11 +1,13 @@
 import { ViewNotePanel } from './ViewNotePanel'
 import { DockedNotesCarousel } from './DockedNotesCarousel'
+import type { DockedNoteDraftKind } from './DockedNoteCard'
 
 interface DockAreaProps {
   height: number
+  onDraftChange?: (key: string, kind: DockedNoteDraftKind, dirty: boolean) => void
 }
 
-export function DockArea({ height }: DockAreaProps) {
+export function DockArea({ height, onDraftChange }: DockAreaProps) {
   return (
     <div
       data-dock-area
@@ -17,7 +19,7 @@ export function DockArea({ height }: DockAreaProps) {
       }}
     >
       <ViewNotePanel />
-      <DockedNotesCarousel />
+      <DockedNotesCarousel onDraftChange={onDraftChange} />
     </div>
   )
 }

@@ -1,39 +1,66 @@
-import { useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import { useAppStore } from '@/stores/app.store'
 import { useTagStore } from '@/stores/tag.store'
 import type { CalendarEvent } from '@/types/calendar.types'
-import type { Note, CountdownItem } from '@/types/notes.types'
-import { ChevronLeft, ChevronRight, Plus, X, Settings } from 'lucide-react'
+import type { Note } from '@/types/notes.types'
+import { Bell, ChevronLeft, ChevronRight, MoreHorizontal, Plus, X, Settings } from 'lucide-react'
 import { endOfWeek, format, startOfWeek } from 'date-fns'
 import { MonthGrid } from '@/components/calendar/MonthGrid'
+import { clampFontSize, getAdaptiveDisplayFontSize } from '@/lib/typography'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import { EventForm } from '@/components/calendar/EventForm'
 import { EventDetailModal } from '@/components/calendar/EventDetailModal'
 import { DayEventsModal } from '@/components/calendar/DayEventsModal'
 import { DockArea } from '@/components/dock/DockArea'
-import { DEFAULT_NOTE_COLOR, hexToLuminance, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import type { DockedNoteDraftKind } from '@/components/dock/DockedNoteCard'
+import { ensureReadableTextColor, isLightColor, normalizeCalendarEvent, normalizeCalendarEvents, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
+import { ReminderCenter, type ReminderHistoryEntry } from '@/components/calendar/ReminderCenter'
+import { reportPersistenceIssue } from '@/stores/persistence.store'
+import type { WindowDraftEntry, WindowDraftKind } from '@/types/electron'
 
-function noteIdFromDataFile(fileName: string): string {
-  return fileName.replace(/\.json$/, '').replace(/^note_/, '')
-}
-
-function normalizePersistedNote(raw: unknown, fallbackId: string): Note | null {
+function normalizePersistedNote(raw: unknown, fallbackId: string, forceFallbackId = true): Note | null {
   if (!raw || typeof raw !== 'object') return null
   const record = raw as Record<string, unknown>
+  const persistedId = typeof record.id === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(record.id)
+    ? record.id
+    : fallbackId
   return normalizeNote({
     ...record,
-    id: typeof record.id === 'string' && record.id.trim() ? record.id : fallbackId,
+    id: forceFallbackId && fallbackId ? fallbackId : persistedId,
+  })
+}
+
+function getViewNoteTagIds(note: Note): string[] {
+  if (note.noteType !== 'echo') return []
+  return [...new Set([
+    ...(Array.isArray(note.viewTagIds) ? note.viewTagIds : []),
+    note.echoTagId,
+  ].filter((tagId): tagId is string => typeof tagId === 'string' && tagId.length > 0))]
+}
+
+function keepSingleDailyNote(notes: Note[]): Note[] {
+  let hasDaily = false
+  return notes.filter((note) => {
+    if (note.noteType !== 'daily') return true
+    if (hasDaily) return false
+    hasDaily = true
+    return true
   })
 }
 
 const DOCK_HEIGHT_STORAGE_KEY = 'oknote.calendarDockHeight'
 const DEFAULT_DOCK_HEIGHT = 260
-const MIN_DOCK_HEIGHT = 150
-const MIN_CALENDAR_CONTENT_HEIGHT = 190
-const COMPACT_MIN_DOCK_HEIGHT = 118
-const COMPACT_MIN_CALENDAR_CONTENT_HEIGHT = 170
+const MIN_DOCK_HEIGHT = 118
+const MIN_CALENDAR_CONTENT_HEIGHT = 170
+const COMPACT_MIN_DOCK_HEIGHT = 96
+const COMPACT_MIN_CALENDAR_CONTENT_HEIGHT = 148
+const MIN_SUPPORTED_YEAR = 1900
+const MAX_SUPPORTED_YEAR = 2100
+const NOTE_CREATE_MENU_ITEM_CLASS = 'w-full rounded-lg px-2.5 py-2 text-left text-xs transition-colors hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none'
 
 function getViewportSize() {
   if (typeof window === 'undefined') return { width: 900, height: 760 }
@@ -41,39 +68,39 @@ function getViewportSize() {
 }
 
 function getCalendarDensity(width: number, height: number): number {
-  const widthScale = width < 520 ? 0.78 : width < 700 ? 0.86 : width < 900 ? 0.93 : 1
-  const heightScale = height < 560 ? 0.78 : height < 700 ? 0.86 : height < 850 ? 0.94 : 1
+  const widthScale = width < 480 ? 0.7 : width < 620 ? 0.8 : width < 780 ? 0.9 : width < 1000 ? 0.96 : 1
+  const heightScale = height < 420 ? 0.68 : height < 560 ? 0.78 : height < 700 ? 0.88 : height < 850 ? 0.95 : 1
   return Math.min(widthScale, heightScale)
 }
 
 function getDockHeightLimits(viewportHeight: number) {
-  const compact = viewportHeight < 650
+  const compact = viewportHeight < 620
   const min = compact ? COMPACT_MIN_DOCK_HEIGHT : MIN_DOCK_HEIGHT
   const minCalendar = compact ? COMPACT_MIN_CALENDAR_CONTENT_HEIGHT : MIN_CALENDAR_CONTENT_HEIGHT
-  const ratioMax = Math.round(viewportHeight * (compact ? 0.34 : 0.42))
+  const ratioMax = Math.round(viewportHeight * (compact ? 0.42 : 0.5))
   return {
     min,
-    max: Math.max(min, Math.min(460, viewportHeight - minCalendar, ratioMax)),
+    max: Math.max(min, Math.min(720, viewportHeight - minCalendar, ratioMax)),
   }
 }
 
-function getInitialDockHeight(): number {
+function getPreferredDockHeight(): number {
   if (typeof window === 'undefined') return DEFAULT_DOCK_HEIGHT
   const saved = Number(window.localStorage.getItem(DOCK_HEIGHT_STORAGE_KEY))
+  return Number.isFinite(saved) ? saved : DEFAULT_DOCK_HEIGHT
+}
+
+function getInitialDockHeight(): number {
+  const value = getPreferredDockHeight()
+  if (typeof window === 'undefined') return value
   const limits = getDockHeightLimits(window.innerHeight)
-  const value = Number.isFinite(saved) ? saved : DEFAULT_DOCK_HEIGHT
   return Math.round(Math.min(limits.max, Math.max(limits.min, value)))
 }
 
-function isDefaultTextColor(value: string): boolean {
-  return ['#e2e8f0', '#1a1a2e', '#111827', '#f8fafc'].includes(value.toLowerCase())
-}
-
 function getAdaptiveCalendarTextColor(backgroundColor: string, opacity: number, configuredTextColor: string): string {
-  if (configuredTextColor && !isDefaultTextColor(configuredTextColor)) return configuredTextColor
-  if (opacity < 0.42) return '#f8fafc'
-  const luminance = hexToLuminance(normalizeHexColor(backgroundColor))
-  return luminance > 0.52 ? '#111827' : '#f8fafc'
+  const readable = ensureReadableTextColor(backgroundColor, configuredTextColor)
+  if (opacity < 0.42 && readable.toLowerCase() === '#111827') return '#111827'
+  return readable
 }
 
 function getAdaptiveTextShadow(textColor: string, opacity: number): string {
@@ -87,6 +114,7 @@ function getAdaptiveTextShadow(textColor: string, opacity: number): string {
 
 export function CalendarWindow() {
   const currentDate = useCalendarStore((s) => s.currentDate)
+  const setCurrentDate = useCalendarStore((s) => s.setCurrentDate)
   const goPrevMonth = useCalendarStore((s) => s.goPrevMonth)
   const goNextMonth = useCalendarStore((s) => s.goNextMonth)
   const goToday = useCalendarStore((s) => s.goToday)
@@ -95,11 +123,20 @@ export function CalendarWindow() {
   const isEventFormOpen = useCalendarStore((s) => s.isEventFormOpen)
   const multiDayMode = useCalendarStore((s) => s.multiDayMode)
   const setMultiDayMode = useCalendarStore((s) => s.setMultiDayMode)
+  const year = currentDate.getFullYear()
+  const month = currentDate.getMonth() + 1
 
   const { settings, themeMode } = useAppSettings('calendar')
   const [isDayEventsOpen, setIsDayEventsOpen] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
+  const pickerDialogRef = useDialogFocusTrap(showPicker)
+  const [pickerYearInput, setPickerYearInput] = useState(() => String(new Date().getFullYear()))
   const [showNoteCreateMenu, setShowNoteCreateMenu] = useState(false)
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false)
+  const [showReminderCenter, setShowReminderCenter] = useState(false)
+  const [eventFormDirty, setEventFormDirty] = useState(false)
+  const [dockDrafts, setDockDrafts] = useState<Record<string, DockedNoteDraftKind>>({})
+  const [reminderHistory, setReminderHistory] = useState<ReminderHistoryEntry[]>([])
   const [calendarCollapsed, setCalendarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month')
   const [dockHeight, setDockHeight] = useState(getInitialDockHeight)
@@ -111,26 +148,120 @@ export function CalendarWindow() {
   const measureTodayActionRef = useRef<HTMLButtonElement>(null)
   const measureEventActionRef = useRef<HTMLButtonElement>(null)
   const measureNoteActionRef = useRef<HTMLButtonElement>(null)
+  const measureOverflowActionRef = useRef<HTMLButtonElement>(null)
   const noteCreateMenuRef = useRef<HTMLDivElement>(null)
+  const noteCreateTriggerRef = useRef<HTMLButtonElement>(null)
+  const overflowMenuRef = useRef<HTMLDivElement>(null)
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null)
+  const yearStripRef = useRef<HTMLDivElement>(null)
+  const yearStripDragRef = useRef<{ pointerId: number; startX: number; scrollLeft: number } | null>(null)
+  const suppressYearClickRef = useRef(false)
   const dockHeightRef = useRef(dockHeight)
-  const preferredDockHeightRef = useRef(dockHeight)
+  const preferredDockHeightRef = useRef(getPreferredDockHeight())
   const calendarCollapsedRef = useRef(false)
   const dockResizeRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null)
   const tags = useTagStore((s) => s.tags)
-
-  const calendarDensity = getCalendarDensity(viewportSize.width, viewportSize.height)
-  const effectiveFontSize = Math.max(11, Math.round(settings.fontSize * calendarDensity * 10) / 10)
-  const isCompactDensity = calendarDensity < 0.93
+  const notes = useNotesStore((s) => s.notes)
+  const todayKey = useCurrentDateKey()
+  const previousTodayKeyRef = useRef(todayKey)
+  const existingViewNoteTagIds = useMemo(
+    () => new Set(notes.flatMap(getViewNoteTagIds)),
+    [notes],
+  )
 
   useEffect(() => {
-    document.documentElement.style.fontSize = `${effectiveFontSize}px`
-    return () => { document.documentElement.style.fontSize = '' }
-  }, [effectiveFontSize])
+    const previousToday = previousTodayKeyRef.current
+    previousTodayKeyRef.current = todayKey
+    if (previousToday === todayKey) return
+    const [previousYear, previousMonth] = previousToday.split('-').map(Number)
+    if (currentDate.getFullYear() === previousYear && currentDate.getMonth() + 1 === previousMonth) {
+      const [nextYear, nextMonth, nextDay] = todayKey.split('-').map(Number)
+      setCurrentDate(new Date(nextYear, nextMonth - 1, nextDay))
+    }
+  }, [currentDate, setCurrentDate, todayKey])
+
+  const viewportDensity = getCalendarDensity(viewportSize.width, viewportSize.height)
+  const requestedFontSize = clampFontSize(settings.fontSize)
+  // Density belongs to the available viewport, not to the typography setting.
+  // Font size must remain continuous while the surrounding geometry stays stable.
+  const calendarDensity = viewportDensity
+  const effectiveFontSize = getAdaptiveDisplayFontSize(requestedFontSize)
+  const calendarGridMinHeight = Math.max(360, Math.ceil(effectiveFontSize * 13.2))
+  const calendarGridMinWidth = Math.max(560, Math.ceil(effectiveFontSize * 21))
+  const isCompactDensity = calendarDensity < 0.92
+  const isSmallType = requestedFontSize <= 11
+  const isLargeType = requestedFontSize >= 19
+  const isExtraLargeType = requestedFontSize >= 25
+  const isMaximumType = requestedFontSize >= 37
+  const isNarrowViewport = viewportSize.width < 700
+  const isShortViewport = viewportSize.height < 620
+  const isTinyWorkspace = viewportSize.width < 400 || viewportSize.height < 340
+  const effectiveViewMode: 'month' | 'week' = isTinyWorkspace ? 'week' : viewMode
+  const dockHeightLimits = getDockHeightLimits(viewportSize.height)
+  const typographyDockMinimum = requestedFontSize >= 49
+    ? Math.min(320, dockHeightLimits.max)
+    : requestedFontSize >= 37
+      ? Math.min(280, dockHeightLimits.max)
+      : requestedFontSize >= 25
+        ? Math.min(240, dockHeightLimits.max)
+        : dockHeightLimits.min
+  const displayedDockHeight = Math.max(dockHeight, typographyDockMinimum)
+  const showDockArea = settings.showDockArea !== false && !isTinyWorkspace
+  const hasDockDrafts = Object.keys(dockDrafts).length > 0
+  // Keep an actively edited dock mounted until its draft is saved or explicitly
+  // discarded. Hiding the area or crossing a responsive breakpoint must never
+  // silently destroy local input state.
+  const renderDockArea = showDockArea || hasDockDrafts
+
+  const handleDockDraftChange = useCallback((key: string, kind: DockedNoteDraftKind, dirty: boolean) => {
+    setDockDrafts((current) => {
+      if (dirty && current[key] === kind) return current
+      if (!dirty && !(key in current)) return current
+      const next = { ...current }
+      if (dirty) next[key] = kind
+      else delete next[key]
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return
+    const entries: Array<WindowDraftKind | WindowDraftEntry> = eventFormDirty ? ['event-form'] : []
+    for (const [key, kind] of Object.entries(dockDrafts)) {
+      const noteId = key.split(':', 1)[0]
+      entries.push(noteId ? { kind, noteId } : kind)
+    }
+    window.electronAPI.setWindowDraftState(entries)
+  }, [dockDrafts, eventFormDirty])
+
+  useEffect(() => () => {
+    window.electronAPI?.setWindowDraftState([])
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', themeMode === 'light')
     document.documentElement.classList.add('electron-transparent')
   }, [themeMode])
+
+  useEffect(() => {
+    if (!showPicker) return
+    setPickerYearInput(String(year))
+    const frame = window.requestAnimationFrame(() => {
+      const strip = yearStripRef.current
+      const active = strip?.querySelector<HTMLElement>('[data-active-year="true"]')
+      if (strip && active) {
+        strip.scrollLeft = active.offsetLeft - (strip.clientWidth - active.clientWidth) / 2
+      }
+    })
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowPicker(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showPicker, year])
 
   useEffect(() => {
     if (window.electronAPI?.isElectron) {
@@ -139,20 +270,86 @@ export function CalendarWindow() {
           setMultiDayMode(false)
           openEventForm(null)
         }
+        if (action === 'show-reminders') setShowReminderCenter(true)
       })
     }
   }, [openEventForm, setMultiDayMode])
 
   useEffect(() => {
-    if (!showNoteCreateMenu) return
+    if (!window.electronAPI?.isElectron) return
+    let cancelled = false
+    window.electronAPI.getReminderHistory().then((history) => {
+      if (!cancelled) setReminderHistory(history)
+    }).catch((error) => {
+      reportPersistenceIssue('提醒记录读取失败', error instanceof Error ? error.message : '无法读取提醒记录。')
+    })
+    const unsubscribe = window.electronAPI.onReminderHistoryChanged((history) => setReminderHistory(history))
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  const unreadReminderCount = reminderHistory.filter((entry) => !entry.read).length
+
+  const markAllRemindersRead = async () => {
+    if (!window.electronAPI?.isElectron) return
+    setReminderHistory((entries) => entries.map((entry) => ({ ...entry, read: true })))
+    const saved = await window.electronAPI.markReminderHistoryRead()
+    if (!saved) reportPersistenceIssue('提醒状态未保存', '“全部已读”未能写入磁盘，请稍后重试。', markAllRemindersRead)
+  }
+
+  const openReminderEvent = (entry: ReminderHistoryEntry) => {
+    setReminderHistory((items) => items.map((item) => item.id === entry.id ? { ...item, read: true } : item))
+    if (window.electronAPI?.isElectron) {
+      void window.electronAPI.markReminderHistoryRead(entry.id).then((saved) => {
+        if (!saved) reportPersistenceIssue('提醒状态未保存', '这条提醒未能标记为已读，请稍后重试。')
+      })
+    }
+    const event = useCalendarStore.getState().events.find((item) => item.id === entry.eventId)
+    if (!event) {
+      reportPersistenceIssue('事件已不存在', '这条提醒对应的事件可能已被删除。')
+      return
+    }
+    setShowReminderCenter(false)
+    setMultiDayMode(!!(event.endDate && event.endDate !== event.startDate))
+    openEventForm(event)
+  }
+
+  const handleTitleMenuKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    close: () => void,
+    trigger: React.RefObject<HTMLButtonElement | null>,
+  ) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      close()
+      window.requestAnimationFrame(() => trigger.current?.focus())
+      return
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    let targetIndex = currentIndex
+    if (event.key === 'ArrowDown') targetIndex = (currentIndex + 1 + items.length) % items.length
+    else if (event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + items.length) % items.length
+    else if (event.key === 'Home') targetIndex = 0
+    else if (event.key === 'End') targetIndex = items.length - 1
+    else return
+    event.preventDefault()
+    items[targetIndex]?.focus()
+  }
+
+  useEffect(() => {
+    if (!showNoteCreateMenu && !showOverflowMenu) return
     const handler = (event: MouseEvent) => {
-      if (!noteCreateMenuRef.current?.contains(event.target as Node)) {
+      if (showNoteCreateMenu && !noteCreateMenuRef.current?.contains(event.target as Node)) {
         setShowNoteCreateMenu(false)
       }
+      if (showOverflowMenu && !overflowMenuRef.current?.contains(event.target as Node)) setShowOverflowMenu(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [showNoteCreateMenu])
+  }, [showNoteCreateMenu, showOverflowMenu])
 
   useEffect(() => {
     const updateTitleActions = () => {
@@ -170,8 +367,11 @@ export function CalendarWindow() {
         measureEventActionRef.current?.getBoundingClientRect().width || 66,
         measureNoteActionRef.current?.getBoundingClientRect().width || 66,
       ].map(Math.ceil)
+      const overflowWidth = Math.ceil(measureOverflowActionRef.current?.getBoundingClientRect().width || 32)
       const required = (count: number) => (
-        widths.slice(0, count).reduce((sum, width) => sum + width, 0) + Math.max(0, count - 1) * gap
+        widths.slice(0, count).reduce((sum, width) => sum + width, 0)
+        + (count < 3 ? overflowWidth : 0)
+        + Math.max(0, count + (count < 3 ? 1 : 0) - 1) * gap
       )
       const showBuffer = 10
 
@@ -202,7 +402,7 @@ export function CalendarWindow() {
       observer.disconnect()
       window.removeEventListener('resize', scheduleTitleActionsUpdate)
     }
-  }, [effectiveFontSize, viewMode])
+  }, [effectiveFontSize, effectiveViewMode])
 
   useEffect(() => {
     const updateViewportSize = () => setViewportSize(getViewportSize())
@@ -212,26 +412,39 @@ export function CalendarWindow() {
   }, [])
 
   useEffect(() => {
+    if (visibleTitleActions === 3) setShowOverflowMenu(false)
+  }, [visibleTitleActions])
+
+  useEffect(() => {
     if (window.electronAPI?.isElectron) {
-      const unsub1 = window.electronAPI.onEchoEventCreated((eventData: unknown) => {
-        const ev = eventData as CalendarEvent
-        useCalendarStore.getState().addEvent(ev)
-      })
+      const reloadNotesFromDisk = () => {
+        window.electronAPI!.getNotesState().then((rawNotes) => {
+          const normalized = rawNotes
+            .map((raw, index) => normalizePersistedNote(
+              raw,
+              raw && typeof raw === 'object' && 'id' in raw ? String((raw as Record<string, unknown>).id) : `invalid_${index}`,
+            ))
+            .filter((note): note is Note => !!note && note.noteType !== 'view')
+          useNotesStore.getState().loadNotes(keepSingleDailyNote(normalized))
+        }).catch((error) => {
+          reportPersistenceIssue('便签列表读取失败', error instanceof Error ? error.message : '无法刷新便签列表。', reloadNotesFromDisk)
+        })
+      }
       const unsub2 = window.electronAPI.onToggleCollapse((collapsed: boolean) => {
         calendarCollapsedRef.current = collapsed
         setCalendarCollapsed(collapsed)
       })
       const unsub3 = window.electronAPI.onEventsChanged((data) => {
         if (Array.isArray(data?.events)) {
-          useCalendarStore.getState().loadEvents(data.events as CalendarEvent[])
+          useCalendarStore.getState().loadEvents(normalizeCalendarEvents(data.events), Number(data.revision) || 0)
           return
         }
-        // Reload events from disk (e.g. after tag deletion cascades)
-        window.electronAPI!.loadAppData('events').then((data) => {
-          if (Array.isArray(data)) {
-            useCalendarStore.getState().loadEvents(data as CalendarEvent[])
+        window.electronAPI!.getEventsState().then((state) => {
+          if (state.loadError) reportPersistenceIssue('事件数据无法读取', state.loadError)
+          if (Array.isArray(state.events)) {
+            useCalendarStore.getState().loadEvents(normalizeCalendarEvents(state.events), state.revision)
           }
-        })
+        }).catch((error) => reportPersistenceIssue('事件读取失败', error instanceof Error ? error.message : '无法刷新事件数据。'))
       })
       const unsub4 = window.electronAPI.onTagsChanged(() => {
         // Reload tags from disk (e.g. after creating/editing tags in settings)
@@ -239,35 +452,36 @@ export function CalendarWindow() {
           if (Array.isArray(data)) {
             useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
           }
-        })
+        }).catch((error) => reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法刷新标签。'))
       })
-      const unsub5 = window.electronAPI.onNotesChanged(() => {
-        // Reload notes from disk (e.g. after dock/undock)
-        window.electronAPI!.listAppData('note_').then((files) => {
-          Promise.all(files.map((f) => window.electronAPI!.loadAppData(f.replace('.json', ''))))
-            .then((rawNotes) => {
-              const normalized = rawNotes
-                .map((raw, index) => normalizePersistedNote(raw, noteIdFromDataFile(files[index])))
-                .filter((note): note is Note => !!note)
-              useNotesStore.getState().loadNotes(normalized)
-            })
-            .catch(() => {})
-        }).catch(() => {})
+      const unsub5 = window.electronAPI.onNotesChanged((payload) => {
+        if (payload?.deletedId) {
+          const current = useNotesStore.getState().notes
+          useNotesStore.getState().loadNotes(current.filter((note) => note.id !== payload.deletedId))
+          return
+        }
+        if (payload?.note && typeof payload.note === 'object') {
+          const normalized = normalizePersistedNote(payload.note, '')
+          if (normalized && normalized.noteType !== 'view') {
+            const current = useNotesStore.getState().notes
+            useNotesStore.getState().loadNotes([
+              normalized,
+              ...current.filter((note) => note.id !== normalized.id && (normalized.noteType !== 'daily' || note.noteType !== 'daily')),
+            ])
+            return
+          }
+        }
+        reloadNotesFromDisk()
       })
-      const unsub6 = window.electronAPI.onDayContextAction((payload) => {
-        if (!payload?.dateStr) return
-        useCalendarStore.getState().setCurrentDate(new Date(payload.dateStr + 'T00:00:00'))
-        setMultiDayMode(payload.mode === 'multi')
-        openEventForm(null)
-      })
-      const unsub7 = window.electronAPI.onOpenEventEditor(async (eventData) => {
+      const unsub6 = window.electronAPI.onOpenEventEditor(async (eventData) => {
         if (!eventData || typeof eventData !== 'object') return
         const event = eventData as CalendarEvent
         if (!event.id) return
-        const latest = await window.electronAPI!.loadAppData('events')
-        if (Array.isArray(latest)) {
-          useCalendarStore.getState().loadEvents(latest as CalendarEvent[])
-          const currentEvent = (latest as CalendarEvent[]).find((item) => item.id === event.id)
+        const latest = await window.electronAPI!.getEventsState()
+        if (Array.isArray(latest.events)) {
+          const normalizedEvents = normalizeCalendarEvents(latest.events)
+          useCalendarStore.getState().loadEvents(normalizedEvents, latest.revision)
+          const currentEvent = normalizedEvents.find((item) => item.id === event.id)
           if (!currentEvent) return
           setMultiDayMode(!!(currentEvent.endDate && currentEvent.endDate !== currentEvent.startDate))
           openEventForm(currentEvent)
@@ -276,64 +490,41 @@ export function CalendarWindow() {
         setMultiDayMode(!!(event.endDate && event.endDate !== event.startDate))
         openEventForm(event)
       })
-      return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7() }
+      return () => { unsub2(); unsub3(); unsub4(); unsub5(); unsub6() }
     }
   }, [openEventForm, setMultiDayMode])
 
-  // Load persisted data on mount (events, notes, countdowns, tags)
+  // Load persisted data on mount (events, notes, tags)
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
     let cancelled = false
 
     const loadNotesData = async (): Promise<Note[]> => {
-      const files = await window.electronAPI!.listAppData('note_')
+      const notesById = new Map<string, Note>()
+      const rawNotes = await window.electronAPI!.getNotesState()
       if (cancelled) return []
-      if (files.length > 0) {
-        const notes: Note[] = []
-        for (const f of files) {
-          const rawKey = f.replace('.json', '')
-          const data = await window.electronAPI!.loadAppData(rawKey)
-          if (cancelled) return []
-          const normalized = normalizePersistedNote(data, noteIdFromDataFile(f))
-          if (normalized) {
-            notes.push(normalized)
-            window.electronAPI!.saveAppData(`note_${normalized.id}`, normalized)
-          }
+      for (const [index, raw] of rawNotes.entries()) {
+        const fallbackId = raw && typeof raw === 'object' && 'id' in raw ? String((raw as Record<string, unknown>).id) : `invalid_${index}`
+        const normalized = normalizePersistedNote(raw, fallbackId)
+        if (normalized && normalized.noteType !== 'view') {
+          notesById.set(normalized.id, normalized)
         }
-        return notes
       }
-      // Fallback: load legacy notes.json
-      const data = await window.electronAPI!.loadAppData('notes')
-      if (cancelled) return []
-      if (Array.isArray(data) && data.length > 0) {
-        const validNotes = data
-          .map((raw, index) => normalizePersistedNote(raw, `legacy_${index}`))
-          .filter((note): note is Note => !!note)
-        if (validNotes.length > 0) {
-          await Promise.all(validNotes.map((n: Note) => window.electronAPI!.saveAppData(`note_${n.id}`, n)))
-        }
-        window.electronAPI!.deleteAppData('notes')
-        return validNotes
-      }
-      return []
+      return keepSingleDailyNote([...notesById.values()])
     }
 
-    Promise.all([
-      window.electronAPI.loadAppData('events').then((data) => {
+    void Promise.allSettled([
+      window.electronAPI.getEventsState().then((data) => {
         if (cancelled) return
-        if (Array.isArray(data)) {
-          useCalendarStore.getState().loadEvents(data as CalendarEvent[])
+        if (data.loadError) reportPersistenceIssue('事件数据无法读取', data.loadError)
+        if (Array.isArray(data.events)) {
+          const normalizedEvents = normalizeCalendarEvents(data.events)
+          useCalendarStore.getState().loadEvents(normalizedEvents, data.revision)
         }
       }),
       loadNotesData().then((notes) => {
         if (cancelled) return
         useNotesStore.getState().loadNotes(notes)
-      }),
-      window.electronAPI.loadAppData('countdowns').then((data) => {
-        if (cancelled) return
-        if (Array.isArray(data)) {
-          useNotesStore.getState().loadCountdowns(data as CountdownItem[])
-        }
       }),
       window.electronAPI.getTags().then((data) => {
         if (cancelled) return
@@ -341,32 +532,17 @@ export function CalendarWindow() {
           useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
         }
       }),
-    ]).then(() => {
+    ]).then((results) => {
       if (cancelled) return
+      const labels = ['事件', '便签', '标签']
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          const message = result.reason instanceof Error ? result.reason.message : '主进程没有响应'
+          reportPersistenceIssue(`${labels[index]}数据读取失败`, `${message}。其他已成功读取的数据仍可继续使用。`)
+        }
+      })
       useAppStore.getState().setDataReady()
       const allNotes = useNotesStore.getState().notes
-
-      // Auto-create default view note if not exists
-      if (!allNotes.find((n: Note) => n.noteType === 'view')) {
-        const viewNote: Note = {
-          id: 'note_view_default',
-          title: '视图',
-          color: DEFAULT_NOTE_COLOR,
-          items: [],
-          transparency: 0.88,
-          fontFamily: settings.fontFamily,
-          fontSize: settings.fontSize,
-          noteType: 'view' as const,
-          viewTagIds: [],
-          isDocked: true,
-          isPinned: false,
-          isArchived: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-        useNotesStore.getState().addNote(viewNote)
-        window.electronAPI!.saveAppData(`note_note_view_default`, viewNote)
-      }
 
       // Only restore undocked notes as windows (docked notes render in calendar)
       const undockedIds = allNotes.filter((n: Note) => !n.isDocked && !n.isHidden).map((n: Note) => n.id)
@@ -374,23 +550,21 @@ export function CalendarWindow() {
         didRestoreRef.current = true
         window.electronAPI!.restoreNotes(undockedIds)
       }
-    }).catch((err) => {
-      if (cancelled) return
-      console.error('Data loading failed:', err)
-      useAppStore.getState().setDataReady()
     })
 
     return () => { cancelled = true }
   }, [])
 
-  const year = currentDate.getFullYear()
-  const month = currentDate.getMonth() + 1
-  const monthValue = `${year}-${String(month).padStart(2, '0')}`
   const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
   const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
-  const titleText = viewMode === 'week'
+  const fullTitleText = effectiveViewMode === 'week'
     ? `${format(weekStart, 'M月d日')} - ${format(weekEnd, 'M月d日')}`
     : `${year}年${month}月`
+  const titleText = viewportSize.width < 400
+    ? effectiveViewMode === 'week'
+      ? `${format(weekStart, 'M/d')}–${format(weekEnd, 'M/d')}`
+      : `${year}/${month}`
+    : fullTitleText
   const bgHex = settings.backgroundColor.replace('#', '')
   const bgWithAlpha = `#${bgHex}${Math.round(settings.backgroundOpacity * 255).toString(16).padStart(2, '0')}`
   const calendarTextColor = getAdaptiveCalendarTextColor(settings.backgroundColor, settings.backgroundOpacity, settings.textColor)
@@ -409,7 +583,7 @@ export function CalendarWindow() {
     : 'rgba(255, 140, 140, 0.85)'
   const eventTextColor = calendarTextColor
   const handlePrev = () => {
-    if (viewMode === 'month') {
+    if (effectiveViewMode === 'month') {
       goPrevMonth()
       return
     }
@@ -418,7 +592,7 @@ export function CalendarWindow() {
     useCalendarStore.getState().setCurrentDate(next)
   }
   const handleNext = () => {
-    if (viewMode === 'month') {
+    if (effectiveViewMode === 'month') {
       goNextMonth()
       return
     }
@@ -426,12 +600,68 @@ export function CalendarWindow() {
     next.setDate(next.getDate() + 7)
     useCalendarStore.getState().setCurrentDate(next)
   }
-  const clampDockHeight = (height: number) => {
+  const readPickerYear = () => {
+    const value = Number.parseInt(pickerYearInput, 10)
+    return Number.isFinite(value) && value >= MIN_SUPPORTED_YEAR && value <= MAX_SUPPORTED_YEAR ? value : null
+  }
+  const goToPickerYear = (nextYear: number, closePicker = false) => {
+    const next = new Date(currentDate)
+    next.setDate(1)
+    next.setFullYear(nextYear)
+    useCalendarStore.getState().setCurrentDate(next)
+    setPickerYearInput(String(nextYear))
+    if (closePicker) setShowPicker(false)
+  }
+  const commitPickerYear = () => {
+    const nextYear = readPickerYear()
+    if (nextYear === null) {
+      setPickerYearInput(String(year))
+      return
+    }
+    goToPickerYear(nextYear)
+  }
+  const goToPickerMonth = (nextMonth: number) => {
+    const next = new Date(currentDate)
+    next.setDate(1)
+    next.setFullYear(readPickerYear() ?? year)
+    next.setMonth(nextMonth - 1)
+    useCalendarStore.getState().setCurrentDate(next)
+    setShowPicker(false)
+  }
+  const handleYearStripPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    suppressYearClickRef.current = false
+    yearStripDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      scrollLeft: event.currentTarget.scrollLeft,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.currentTarget.dataset.dragging = 'true'
+  }
+  const handleYearStripPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = yearStripDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const delta = event.clientX - drag.startX
+    if (Math.abs(delta) > 4) suppressYearClickRef.current = true
+    event.currentTarget.scrollLeft = drag.scrollLeft - delta
+  }
+  const finishYearStripDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = yearStripDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    yearStripDragRef.current = null
+    delete event.currentTarget.dataset.dragging
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
+    window.setTimeout(() => { suppressYearClickRef.current = false }, 0)
+  }
+  const pickerYearStart = Math.min(MAX_SUPPORTED_YEAR - 80, Math.max(MIN_SUPPORTED_YEAR, year - 40))
+  const pickerYears = Array.from({ length: 81 }, (_, index) => pickerYearStart + index)
+  const clampDockHeight = useCallback((height: number) => {
     const limits = getDockHeightLimits(window.innerHeight)
     return Math.round(Math.min(limits.max, Math.max(limits.min, height)))
-  }
+  }, [])
   const handleDockResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return
+    if (event.button !== 0 || isEventFormOpen) return
     dockResizeRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
@@ -456,6 +686,19 @@ export function CalendarWindow() {
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
     window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(preferredDockHeightRef.current))
   }
+  const resizeDockByKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isEventFormOpen || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const limits = getDockHeightLimits(window.innerHeight)
+    const next = event.key === 'Home'
+      ? limits.min
+      : event.key === 'End'
+        ? limits.max
+        : clampDockHeight(dockHeight + (event.key === 'ArrowUp' ? 16 : -16))
+    preferredDockHeightRef.current = next
+    setDockHeight(next)
+    window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(next))
+  }
 
   useEffect(() => {
     dockHeightRef.current = dockHeight
@@ -476,17 +719,22 @@ export function CalendarWindow() {
       window.removeEventListener('resize', handleResize)
       document.body.classList.remove('resizing-dock')
     }
-  }, [])
+  }, [clampDockHeight])
 
   return (
     <div
-      className={`calendar-window relative h-screen w-screen flex flex-col select-none ${calendarCollapsed ? 'calendar-collapsed' : ''} ${isCompactDensity ? 'calendar-density-compact' : ''}`}
+      className={`calendar-window relative h-screen w-screen flex flex-col ${calendarCollapsed ? 'calendar-collapsed' : ''} ${isCompactDensity ? 'calendar-density-compact' : ''} ${isSmallType ? 'calendar-type-small' : ''} ${isLargeType ? 'calendar-type-large' : ''} ${isExtraLargeType ? 'calendar-type-xlarge' : ''} ${isMaximumType ? 'calendar-type-max' : ''} ${isNarrowViewport ? 'calendar-viewport-narrow' : ''} ${isShortViewport ? 'calendar-viewport-short' : ''}`}
       style={{
         fontFamily: `"${settings.fontFamily}", system-ui, sans-serif`,
+        fontSize: effectiveFontSize,
         color: calendarTextColor,
         ['--calendar-text' as string]: calendarTextColor,
         ['--calendar-text-shadow' as string]: calendarTextShadow,
         ['--calendar-density' as string]: calendarDensity,
+        ['--calendar-font-size' as string]: `${effectiveFontSize}px`,
+        ['--calendar-requested-font-size' as string]: requestedFontSize,
+        ['--calendar-grid-min-height' as string]: `${calendarGridMinHeight}px`,
+        ['--calendar-grid-min-width' as string]: `${calendarGridMinWidth}px`,
       }}
     >
       {/* Background overlay */}
@@ -495,21 +743,24 @@ export function CalendarWindow() {
       {/* Title bar */}
       <div
         ref={titlebarRef}
-        className="cal-titlebar relative z-[60] items-center px-4 py-2.5 shrink-0 border-b"
+        className="cal-titlebar relative z-[60] items-center px-4 py-2.5 shrink-0 border-b select-none"
         style={{ WebkitAppRegion: 'drag', borderColor: `${calendarTextColor}18` } as React.CSSProperties}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
       >
         <div className="cal-left-actions-measure" aria-hidden="true">
-          <button ref={measureTodayActionRef} className="cal-action cal-action-today px-2.5 py-1 text-[0.8em] rounded-md border">
+          <button ref={measureTodayActionRef} tabIndex={-1} className="cal-action cal-action-today px-2.5 py-1 text-[0.8em] rounded-md border">
             <span className="cal-action-label">今天</span>
           </button>
-          <button ref={measureEventActionRef} className="cal-action cal-action-event px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
+          <button ref={measureEventActionRef} tabIndex={-1} className="cal-action cal-action-event px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
             <Plus size={11} />
             <span className="cal-action-label">事件</span>
           </button>
-          <button ref={measureNoteActionRef} className="cal-action cal-action-note px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
+          <button ref={measureNoteActionRef} tabIndex={-1} className="cal-action cal-action-note px-2.5 py-1 text-[0.8em] rounded-md border flex items-center gap-1">
             <Plus size={11} />
             <span className="cal-action-label">便签</span>
+          </button>
+          <button ref={measureOverflowActionRef} tabIndex={-1} className="cal-action h-8 w-8 rounded-md border" aria-label="更多操作">
+            <MoreHorizontal size={15} />
           </button>
         </div>
         {/* Left: actions */}
@@ -518,6 +769,8 @@ export function CalendarWindow() {
             onClick={goToday}
             className={`cal-action cal-action-today px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border ${visibleTitleActions >= 1 ? '' : 'cal-action-hidden'}`}
             style={{ borderColor: `${calendarTextColor}18` }}
+            tabIndex={visibleTitleActions >= 1 ? 0 : -1}
+            aria-hidden={visibleTitleActions < 1}
           >
             <span className="cal-action-label">今天</span>
           </button>
@@ -525,74 +778,180 @@ export function CalendarWindow() {
             onClick={() => { setMultiDayMode(false); openEventForm(null) }}
             className={`cal-action cal-action-event px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1 ${visibleTitleActions >= 2 ? '' : 'cal-action-hidden'}`}
             style={{ borderColor: `${calendarTextColor}18` }}
+            tabIndex={visibleTitleActions >= 2 ? 0 : -1}
+            aria-hidden={visibleTitleActions < 2}
           >
             <Plus size={11} />
             <span className="cal-action-label">事件</span>
           </button>
           <div ref={noteCreateMenuRef} className="relative">
             <button
-              onClick={() => setShowNoteCreateMenu((open) => !open)}
+              ref={noteCreateTriggerRef}
+              onClick={() => {
+                setShowOverflowMenu(false)
+                setShowNoteCreateMenu((open) => !open)
+              }}
               className={`cal-action cal-action-note px-2.5 py-1 text-[0.8em] rounded-md opacity-50 hover:opacity-80 transition-opacity border flex items-center gap-1 ${visibleTitleActions >= 3 ? '' : 'cal-action-hidden'}`}
               style={{ borderColor: `${calendarTextColor}18` }}
+              tabIndex={visibleTitleActions >= 3 ? 0 : -1}
+              aria-hidden={visibleTitleActions < 3}
+              aria-haspopup="menu"
+              aria-expanded={showNoteCreateMenu}
             >
               <Plus size={11} />
               <span className="cal-action-label">便签</span>
             </button>
             {showNoteCreateMenu && (
-              <div
-                className="absolute left-0 top-full mt-1 w-56 rounded-xl border p-2 shadow-2xl z-[10000]"
-                style={{
-                  backgroundColor: lightBg ? 'rgba(255,255,255,0.98)' : 'rgba(13,13,16,0.96)',
-                  borderColor: lightBg ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)',
-                  color: calendarTextColor,
-                  backdropFilter: 'blur(24px)',
-                  WebkitBackdropFilter: 'blur(24px)',
-                }}
-              >
-                <button
-                  onClick={() => {
-                    window.electronAPI?.createNote({ noteType: 'independent' })
-                    setShowNoteCreateMenu(false)
-                  }}
-                  className="w-full rounded-lg px-2.5 py-2 text-left text-xs hover:bg-white/10 transition-colors"
+              <>
+                <div
+                  className="fixed inset-0 z-[9998]"
+                  style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                  onPointerDown={() => setShowNoteCreateMenu(false)}
+                  aria-hidden="true"
+                />
+                <div
+                  className="absolute left-0 top-full mt-1 w-56 rounded-xl border p-2 shadow-2xl z-[10000]"
+                  style={{
+                    backgroundColor: lightBg ? 'rgba(255,255,255,0.98)' : 'rgba(13,13,16,0.96)',
+                    borderColor: lightBg ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)',
+                    color: calendarTextColor,
+                    backdropFilter: 'blur(24px)',
+                    WebkitBackdropFilter: 'blur(24px)',
+                    WebkitAppRegion: 'no-drag',
+                  } as React.CSSProperties}
+                  role="menu"
+                  aria-label="新建便签"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => handleTitleMenuKeyDown(event, () => setShowNoteCreateMenu(false), visibleTitleActions < 3 ? overflowTriggerRef : noteCreateTriggerRef)}
                 >
-                  <div className="font-medium opacity-80">独立便签</div>
-                  <div className="mt-0.5 text-[0.85em] opacity-35">待办与自由记录</div>
-                </button>
-                <button
-                  onClick={() => {
-                    window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办' })
-                    setShowNoteCreateMenu(false)
-                  }}
-                  className="w-full rounded-lg px-2.5 py-2 text-left text-xs hover:bg-white/10 transition-colors"
-                >
-                  <div className="font-medium opacity-80">每日待办</div>
-                  <div className="mt-0.5 text-[0.85em] opacity-35">按日期查看历史待办</div>
-                </button>
-                <div className="my-1 border-t" style={{ borderColor: `${calendarTextColor}18` }} />
-                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest opacity-30">视图便签</div>
-                <div className="px-2.5 pb-1 text-[10px] leading-relaxed opacity-40">显示指定标签的事件</div>
-                <div className="max-h-40 overflow-y-auto">
-                  {tags.map((tag) => (
-                    <button
-                      key={tag.id}
-                      onClick={() => {
-                        window.electronAPI?.createNote({ noteType: 'echo', echoTagId: tag.id, title: tag.name, color: tag.color })
-                        setShowNoteCreateMenu(false)
-                      }}
-                      className="w-full rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-white/10 transition-colors flex items-center gap-2"
-                    >
-                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
-                      <span className="truncate">{tag.name}</span>
-                    </button>
-                  ))}
-                  {tags.length === 0 && (
-                    <div className="px-2.5 py-2 text-xs opacity-30">暂无标签，请先在设置中创建</div>
-                  )}
+                  <button
+                    onClick={() => {
+                      window.electronAPI?.createNote({ noteType: 'independent' })
+                      setShowNoteCreateMenu(false)
+                    }}
+                    className={NOTE_CREATE_MENU_ITEM_CLASS}
+                    role="menuitem"
+                    autoFocus
+                  >
+                    <div className="font-medium opacity-80">独立便签</div>
+                    <div className="mt-0.5 text-[0.85em] opacity-35">待办与自由记录</div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办' })
+                      setShowNoteCreateMenu(false)
+                    }}
+                    className={NOTE_CREATE_MENU_ITEM_CLASS}
+                    role="menuitem"
+                  >
+                    <div className="font-medium opacity-80">每日待办</div>
+                    <div className="mt-0.5 text-[0.85em] opacity-35">按日期查看历史待办</div>
+                  </button>
+                  <div className="my-1 border-t" style={{ borderColor: `${calendarTextColor}18` }} />
+                  <div className="rounded-lg px-2.5 py-2 text-xs" role="group" aria-label="按标签创建标签视图便签">
+                    <div className="font-medium opacity-80">标签视图便签</div>
+                    <div className="mt-0.5 text-[0.85em] opacity-45">汇总所选标签的事件，并随事件同步</div>
+                    {tags.length > 0 ? (
+                      <div className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
+                        {tags.map((tag) => {
+                          const alreadyExists = existingViewNoteTagIds.has(tag.id)
+                          return (
+                            <button
+                              key={tag.id}
+                              onClick={() => {
+                                window.electronAPI?.createNote({ noteType: 'echo', echoTagId: tag.id, title: tag.name, color: tag.color })
+                                setShowNoteCreateMenu(false)
+                              }}
+                              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none"
+                              role="menuitem"
+                              title={alreadyExists ? `打开“${tag.name}”标签视图便签` : `新建“${tag.name}”标签视图便签`}
+                            >
+                              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: tag.color }} />
+                              <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                              <span className="shrink-0 text-[0.82em] opacity-35">{alreadyExists ? '打开' : '新建'}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="mt-2 rounded-md px-2 py-1.5 text-[0.85em] opacity-40">暂无标签，请先在设置中创建</div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
+          {visibleTitleActions < 3 && (
+            <div ref={overflowMenuRef} className="relative">
+              <button
+                ref={overflowTriggerRef}
+                type="button"
+                onClick={() => {
+                  setShowNoteCreateMenu(false)
+                  setShowOverflowMenu((open) => !open)
+                }}
+                className="cal-action h-8 w-8 rounded-md border opacity-55 transition-all hover:bg-white/5 hover:opacity-95"
+                style={{ borderColor: `${calendarTextColor}18` }}
+                aria-label="更多新建操作"
+                aria-haspopup="menu"
+                aria-expanded={showOverflowMenu}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+              {showOverflowMenu && (
+                <div
+                  className="absolute left-0 top-full z-[10000] mt-1 w-44 rounded-xl border p-1.5 shadow-2xl"
+                  style={{
+                    backgroundColor: lightBg ? 'rgba(255,255,255,0.99)' : 'rgba(13,13,16,0.98)',
+                    borderColor: lightBg ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)',
+                    color: calendarTextColor,
+                  }}
+                  role="menu"
+                  aria-label="更多新建操作"
+                  onKeyDown={(event) => handleTitleMenuKeyDown(event, () => setShowOverflowMenu(false), overflowTriggerRef)}
+                >
+                  {visibleTitleActions < 1 && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      autoFocus
+                      className="min-h-9 w-full rounded-lg px-3 text-left text-xs opacity-75 hover:bg-white/10 hover:opacity-100"
+                      onClick={() => { goToday(); setShowOverflowMenu(false) }}
+                    >
+                      回到今天
+                    </button>
+                  )}
+                  {visibleTitleActions < 2 && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      autoFocus={visibleTitleActions >= 1}
+                      className="min-h-9 w-full rounded-lg px-3 text-left text-xs opacity-75 hover:bg-white/10 hover:opacity-100"
+                      onClick={() => {
+                        setMultiDayMode(false)
+                        openEventForm(null)
+                        setShowOverflowMenu(false)
+                      }}
+                    >
+                      新建事件
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    autoFocus={visibleTitleActions >= 2}
+                    className="min-h-9 w-full rounded-lg px-3 text-left text-xs opacity-75 hover:bg-white/10 hover:opacity-100"
+                    onClick={() => {
+                      setShowOverflowMenu(false)
+                      setShowNoteCreateMenu(true)
+                    }}
+                  >
+                    新建便签…
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Center: navigation arrows + month title + picker */}
@@ -604,22 +963,30 @@ export function CalendarWindow() {
         >
           <button
             onClick={handlePrev}
-            className="cal-chevron-left w-7 h-7 rounded-lg flex items-center justify-center opacity-40 hover:opacity-80 hover:bg-white/5 transition-all"
+            className="cal-chevron-left w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            aria-label={effectiveViewMode === 'month' ? '上一个月' : '上一周'}
           >
             <ChevronLeft size={17} />
           </button>
           <button
-            onClick={() => setShowPicker(!showPicker)}
-            className="calendar-text-readable text-sm font-semibold tracking-wide opacity-85 min-w-[90px] text-center hover:opacity-100 hover:bg-white/5 rounded-lg px-2 py-0.5 transition-all relative"
+            onClick={() => {
+              if (!showPicker) setPickerYearInput(String(year))
+              setShowPicker(!showPicker)
+            }}
+            className="cal-month-title calendar-text-readable min-h-6 text-[1em] font-semibold tracking-wide opacity-85 min-w-[90px] text-center hover:opacity-100 hover:bg-white/5 rounded-lg px-2 py-0.5 transition-all relative"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            aria-haspopup="dialog"
+            aria-expanded={showPicker}
+            title={fullTitleText}
           >
             {titleText}
           </button>
           <button
             onClick={handleNext}
-            className="cal-chevron-right w-7 h-7 rounded-lg flex items-center justify-center opacity-40 hover:opacity-80 hover:bg-white/5 transition-all"
+            className="cal-chevron-right w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            aria-label={effectiveViewMode === 'month' ? '下一个月' : '下一周'}
           >
             <ChevronRight size={17} />
           </button>
@@ -627,54 +994,90 @@ export function CalendarWindow() {
           {/* Year/Month Picker */}
           {showPicker && (
             <>
-              <div className="fixed inset-0 z-[9998]" onClick={() => setShowPicker(false)} />
               <div
-                className="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-[9999] border rounded-xl shadow-2xl p-4 w-[320px]"
+                className="fixed inset-0 z-[9998]"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                onPointerDown={() => setShowPicker(false)}
+                aria-hidden="true"
+              />
+              <div
+                ref={pickerDialogRef}
+                className="calendar-date-picker absolute top-full left-1/2 -translate-x-1/2 mt-1 z-[9999] w-[min(360px,calc(100vw-20px))] rounded-xl p-4"
                 style={{
-                  backgroundColor: lightBg ? 'rgba(255,255,255,0.98)' : 'rgba(13,13,16,0.96)',
-                  borderColor: lightBg ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.16)',
+                  backgroundColor: lightBg ? 'rgba(255,255,255,0.99)' : 'rgba(10,18,31,0.99)',
                   color: calendarTextColor,
-                  backdropFilter: 'blur(24px)',
-                  WebkitBackdropFilter: 'blur(24px)',
                   boxShadow: lightBg ? '0 22px 60px rgba(20, 24, 32, 0.20)' : '0 22px 60px rgba(0, 0, 0, 0.45)',
                 }}
-                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label="选择年份和月份"
               >
-                <div className="mb-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-widest opacity-35 mb-2 text-center">快速跳转</div>
-                  <input
-                    type="month"
-                    value={monthValue}
-                    onChange={(e) => {
-                      if (!e.target.value) return
-                      const [nextYear, nextMonth] = e.target.value.split('-').map(Number)
-                      if (!nextYear || !nextMonth) return
-                      useCalendarStore.getState().setCurrentDate(new Date(nextYear, nextMonth - 1, 1))
-                    }}
-                    className="w-full rounded-lg border bg-white/80 px-3 py-2 text-center text-sm font-semibold outline-none transition-colors focus:border-primary/50 dark:bg-black/25"
-                    style={{ borderColor: `${calendarTextColor}20`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-                  />
+                <div className="mb-4 flex items-end gap-2">
+                  <label className="min-w-0 flex-1">
+                    <span className="mb-1.5 block text-[11px] font-semibold opacity-60">直接输入年份</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      minLength={4}
+                      maxLength={4}
+                      value={pickerYearInput}
+                      onChange={(event) => setPickerYearInput(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') commitPickerYear()
+                      }}
+                      aria-label="年份"
+                      aria-describedby="calendar-year-range"
+                      className="calendar-year-input w-full rounded-lg border px-3 py-2 text-center text-base font-semibold tabular-nums outline-none transition-colors focus:border-primary/60"
+                      style={{ borderColor: `${calendarTextColor}20`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={commitPickerYear}
+                    className="h-[38px] rounded-lg bg-primary/20 px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary/28"
+                  >
+                    定位
+                  </button>
                 </div>
+                <p id="calendar-year-range" className="-mt-2 mb-3 text-center text-[11px] opacity-55">支持 1900–2100 年的农历与节假日显示</p>
                 <div className="mb-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-widest opacity-35 mb-2 text-center">年份</div>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {Array.from({ length: 21 }, (_, i) => year - 10 + i).map((y) => (
+                  <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold opacity-60">
+                    <span>年份</span>
+                    <span className="font-normal opacity-70">横向拖动</span>
+                  </div>
+                  <div
+                    ref={yearStripRef}
+                    className="calendar-year-strip flex cursor-grab snap-x gap-1.5 overflow-x-auto pb-2"
+                    onPointerDown={handleYearStripPointerDown}
+                    onPointerMove={handleYearStripPointerMove}
+                    onPointerUp={finishYearStripDrag}
+                    onPointerCancel={finishYearStripDrag}
+                    onWheel={(event) => {
+                      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+                      event.preventDefault()
+                      event.currentTarget.scrollLeft += event.deltaY
+                    }}
+                    aria-label="年份横向选择"
+                  >
+                    {pickerYears.map((pickerYear) => (
                       <button
-                        key={y}
+                        key={pickerYear}
                         onClick={() => {
-                          const newDate = new Date(currentDate)
-                          newDate.setDate(1)
-                          newDate.setFullYear(y)
-                          useCalendarStore.getState().setCurrentDate(newDate)
+                          if (suppressYearClickRef.current) return
+                          goToPickerYear(pickerYear)
                         }}
-                        className={`py-1.5 text-xs rounded-md transition-all ${
-                          y === year
+                        className={`shrink-0 snap-center rounded-md px-2.5 py-1.5 text-xs tabular-nums transition-colors ${
+                          pickerYear === year
                             ? 'bg-primary/20 text-primary font-semibold'
-                            : 'opacity-50 hover:opacity-90 hover:bg-white/5'
+                            : 'opacity-50 hover:bg-white/5 hover:opacity-90'
                         }`}
+                        data-active-year={pickerYear === year ? 'true' : undefined}
+                        aria-current={pickerYear === year ? 'date' : undefined}
                         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                       >
-                        {y}
+                        {pickerYear}
                       </button>
                     ))}
                   </div>
@@ -686,17 +1089,13 @@ export function CalendarWindow() {
                     {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                       <button
                         key={m}
-                        onClick={() => {
-                          const newDate = new Date(currentDate)
-                          newDate.setDate(1)
-                          newDate.setMonth(m - 1)
-                          useCalendarStore.getState().setCurrentDate(newDate)
-                        }}
+                        onClick={() => goToPickerMonth(m)}
                         className={`py-1.5 text-xs rounded-md transition-all ${
                           m === month
                             ? 'bg-primary/20 text-primary font-semibold'
                             : 'opacity-50 hover:opacity-90 hover:bg-white/5'
                         }`}
+                        aria-pressed={m === month}
                         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                       >
                         {m}月
@@ -715,20 +1114,26 @@ export function CalendarWindow() {
             {(['month', 'week'] as const).map((mode) => (
               <button
                 key={mode}
-                onClick={() => setViewMode(mode)}
+                onClick={() => { if (!(isTinyWorkspace && mode === 'month')) setViewMode(mode) }}
+                disabled={isTinyWorkspace && mode === 'month'}
                 className={`px-2 py-0.5 text-[0.72em] rounded transition-all ${
-                  viewMode === mode ? 'bg-primary/20 text-primary opacity-90' : 'opacity-30 hover:opacity-70'
+                  effectiveViewMode === mode ? 'bg-primary/20 text-primary opacity-90' : 'opacity-50 hover:opacity-75'
                 }`}
-                title={mode === 'month' ? '月视图' : '周视图'}
+                 title={mode === 'month' && isTinyWorkspace ? '当前窗口过小，暂用周视图' : (mode === 'month' ? '月视图' : '周视图')}
+                  aria-pressed={effectiveViewMode === mode}
               >
                 {mode === 'month' ? '月' : '周'}
               </button>
             ))}
           </div>
-          <button onClick={() => window.electronAPI?.openSettings()} className="w-6 h-6 rounded flex items-center justify-center opacity-35 hover:opacity-75 transition-all" title="设置">
+          <button onClick={() => setShowReminderCenter(true)} className="touch-target relative flex h-7 w-7 items-center justify-center rounded-lg opacity-60 transition-all hover:bg-white/5 hover:opacity-90" title="提醒记录" aria-label={unreadReminderCount > 0 ? `提醒记录，${unreadReminderCount} 条未读` : '提醒记录'}>
+            <Bell size={14} />
+            {unreadReminderCount > 0 && <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />}
+          </button>
+          <button onClick={() => window.electronAPI?.openSettings()} className="touch-target w-8 h-8 rounded-lg flex items-center justify-center opacity-60 hover:opacity-90 hover:bg-white/5 transition-all" title="设置" aria-label="打开设置">
             <Settings size={13} />
           </button>
-          <button onClick={() => window.electronAPI?.closeWindow()} className="w-6 h-6 rounded flex items-center justify-center opacity-35 hover:opacity-80 hover:text-red-400 transition-all">
+          <button onClick={() => window.electronAPI?.closeWindow()} className="touch-target w-8 h-8 rounded-lg flex items-center justify-center opacity-60 hover:opacity-90 hover:bg-white/5 hover:text-red-400 transition-all" aria-label="关闭日历" title="关闭日历">
             <X size={13} />
           </button>
         </div>
@@ -736,25 +1141,38 @@ export function CalendarWindow() {
 
       {/* Content */}
       <div className="cal-main-content relative z-[30] flex-1 flex flex-col overflow-hidden px-3 pb-3">
-        <div className="flex-1 overflow-hidden">
-          <MonthGrid compact viewMode={viewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} onDayDoubleClick={() => setIsDayEventsOpen(true)} />
+        <div className="calendar-grid-scroll flex-1 overflow-hidden">
+          <MonthGrid compact viewMode={effectiveViewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} todayKey={todayKey} onDayDoubleClick={() => setIsDayEventsOpen(true)} />
         </div>
       </div>
 
       {/* Dock area with view note panel + carousel */}
-      <div
-        className={`dock-resizer relative z-[45] h-2 shrink-0 cursor-row-resize ${isEventFormOpen ? 'dock-resizer-disabled' : ''}`}
-        style={{ WebkitAppRegion: 'no-drag', borderColor: `${calendarTextColor}18` } as React.CSSProperties}
-        onPointerDown={handleDockResizeStart}
-        onPointerMove={handleDockResizeMove}
-        onPointerUp={finishDockResize}
-        onPointerCancel={finishDockResize}
-        title="拖动调整挂载区高度"
-      >
-        <div className="dock-resizer-line absolute left-0 right-0 top-1/2 h-px -translate-y-1/2" />
-        <div className="dock-resizer-grip absolute left-1/2 top-1/2 h-1 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full" />
-      </div>
-      <DockArea height={dockHeight} />
+      {renderDockArea && (
+        <>
+          <div
+            className={`dock-resizer relative z-[45] h-2 shrink-0 cursor-row-resize ${isEventFormOpen ? 'dock-resizer-disabled' : ''}`}
+            style={{ WebkitAppRegion: 'no-drag', borderColor: `${calendarTextColor}18` } as React.CSSProperties}
+            onPointerDown={handleDockResizeStart}
+            onPointerMove={handleDockResizeMove}
+            onPointerUp={finishDockResize}
+            onPointerCancel={finishDockResize}
+            onKeyDown={resizeDockByKeyboard}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整挂载区高度"
+            aria-valuemin={typographyDockMinimum}
+            aria-valuemax={dockHeightLimits.max}
+            aria-valuenow={displayedDockHeight}
+            aria-disabled={isEventFormOpen}
+            tabIndex={isEventFormOpen ? -1 : 0}
+            title="拖动调整挂载区高度"
+          >
+            <div className="dock-resizer-line absolute left-0 right-0 top-1/2 h-px -translate-y-1/2" />
+            <div className="dock-resizer-grip absolute left-1/2 top-1/2 h-1 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full" />
+          </div>
+          <DockArea height={displayedDockHeight} onDraftChange={handleDockDraftChange} />
+        </>
+      )}
 
       {/* Modals */}
       <EventDetailModal />
@@ -763,8 +1181,16 @@ export function CalendarWindow() {
         <EventForm
           onClose={closeEventForm}
           initialMultiDay={multiDayMode}
+          onDirtyChange={setEventFormDirty}
         />
       )}
+      <ReminderCenter
+        open={showReminderCenter}
+        entries={reminderHistory}
+        onClose={() => setShowReminderCenter(false)}
+        onMarkAllRead={markAllRemindersRead}
+        onOpenEvent={openReminderEvent}
+      />
     </div>
   )
 }

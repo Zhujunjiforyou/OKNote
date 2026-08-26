@@ -8,13 +8,12 @@ import {
   endOfWeek,
   eachDayOfInterval,
   isSameMonth,
-  isToday,
   format,
 } from 'date-fns'
 import { DayCell } from './DayCell'
-import { getHoliday } from '@/lib/holidays'
+import { getAdjustedWorkday, getHoliday } from '@/lib/holidays'
 import type { CalendarEvent } from '@/types/calendar.types'
-import { buildEventsByDate, getEventInstanceKey } from '@/lib/utils'
+import { buildDailyTodoItemsByDate, buildEventsByDate, compareCalendarEventStart, getEventInstanceKey } from '@/lib/utils'
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
@@ -26,9 +25,10 @@ interface MonthGridProps {
   holidayTextColor?: string
   eventTextColor?: string
   onDayDoubleClick?: () => void
+  todayKey?: string
 }
 
-export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick }: MonthGridProps) {
+export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick, todayKey }: MonthGridProps) {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
@@ -64,19 +64,32 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
     return buildEventsByDate(events, rangeStart, rangeEnd)
   }, [events, rangeStart, rangeEnd])
 
-  const dailyTodoCounts = useMemo(() => {
-    const map = new Map<string, number>()
-    if (!rangeStart || !rangeEnd) return map
+  const dailyTodoSummary = useMemo(() => {
+    const itemsByDate = buildDailyTodoItemsByDate(notes, rangeStart, rangeEnd)
+    const counts = new Map<string, number>()
+    for (const [dateStr, items] of itemsByDate) counts.set(dateStr, items.length)
+    if (!rangeStart || !rangeEnd) return { itemsByDate, counts }
+    const completedEventOccurrences = new Set<string>()
     for (const note of notes) {
       if (note.noteType !== 'daily') continue
-      for (const item of note.items || []) {
-        if (!item.todoDate || item.isCompleted) continue
-        if (item.todoDate < rangeStart || item.todoDate > rangeEnd) continue
-        map.set(item.todoDate, (map.get(item.todoDate) || 0) + 1)
+      for (const key of note.dailyTodo?.completedEventOccurrences || []) {
+        completedEventOccurrences.add(key)
       }
     }
-    return map
-  }, [notes, rangeStart, rangeEnd])
+
+    for (const [dateStr, dateEvents] of eventsByDate) {
+      const pendingRecurringKeys = new Set(
+        dateEvents
+          .filter((event) => event.recurrence)
+          .map(getEventInstanceKey)
+          .filter((key) => !completedEventOccurrences.has(key)),
+      )
+      if (pendingRecurringKeys.size > 0) {
+        counts.set(dateStr, (counts.get(dateStr) || 0) + pendingRecurringKeys.size)
+      }
+    }
+    return { itemsByDate, counts }
+  }, [eventsByDate, notes, rangeStart, rangeEnd])
 
   // For each week, assign consistent row positions to multi-day events
   const weekEventRows = useMemo(() => {
@@ -109,17 +122,22 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
   const weekdayLabels = WEEKDAY_LABELS
 
   return (
-    <div className={compact ? 'flex flex-col h-full' : 'flex flex-col h-full p-3'}>
+    <div
+      className={`month-grid ${compact ? 'flex flex-col h-full' : 'flex flex-col h-full p-3'}`}
+      role="grid"
+      aria-label={viewMode === 'week' ? '周日历' : '月日历'}
+    >
       {/* Day headers */}
-      <div className="grid grid-cols-7 shrink-0 mb-0.5">
+      <div className="grid grid-cols-7 shrink-0 mb-0.5" role="row">
         {weekdayLabels.map((d, i) => (
           <div
             key={d}
-            className={`text-center text-[0.7em] font-semibold tracking-wide ${
+            className={`text-center text-[0.78em] font-semibold tracking-wide ${
               compact ? 'py-0.5' : 'py-1.5'
             } ${
               i >= 5 ? 'opacity-55' : 'opacity-75'
             }`}
+            role="columnheader"
           >
             {d}
           </div>
@@ -128,57 +146,64 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
 
       {/* Calendar grid - fills remaining height */}
       <div
-        className="grid grid-cols-7 flex-1 auto-rows-fr overflow-hidden rounded-md border"
+        className="month-grid-body grid grid-cols-7 flex-1 auto-rows-fr overflow-hidden rounded-md border"
         style={{ borderColor: cellBorderColor || 'rgba(255,255,255,0.15)' }}
+        role="rowgroup"
       >
         {weeks.map((week, wi) => {
           const rowMap = weekEventRows[wi] || {}
 
-          return week.map((day, di) => {
-            const dateStr = format(day, 'yyyy-MM-dd')
+          return (
+            <div key={wi} role="row" className="contents">
+              {week.map((day, di) => {
+                const dateStr = format(day, 'yyyy-MM-dd')
 
-            const sorted = [...(eventsByDate.get(dateStr) || [])].sort((a, b) => {
-              const aMulti = !!(a.endDate && a.endDate !== a.startDate)
-              const bMulti = !!(b.endDate && b.endDate !== b.startDate)
-              if (aMulti && !bMulti) return -1
-              if (!aMulti && bMulti) return 1
-              if (aMulti && bMulti) {
-                return (rowMap[getEventInstanceKey(a)] ?? 99) - (rowMap[getEventInstanceKey(b)] ?? 99)
-              }
-              return 0
-            })
+                const sorted = [...(eventsByDate.get(dateStr) || [])].sort((a, b) => {
+                  const aMulti = !!(a.endDate && a.endDate !== a.startDate)
+                  const bMulti = !!(b.endDate && b.endDate !== b.startDate)
+                  if (aMulti && !bMulti) return -1
+                  if (!aMulti && bMulti) return 1
+                  if (aMulti && bMulti) {
+                    const rowCompare = (rowMap[getEventInstanceKey(a)] ?? 99) - (rowMap[getEventInstanceKey(b)] ?? 99)
+                    if (rowCompare !== 0) return rowCompare
+                  }
+                  return compareCalendarEventStart(a, b)
+                })
 
-            return (
-              <DayCell
-                key={`${wi}-${di}`}
-                day={day}
-                dateStr={dateStr}
-                events={sorted}
-                dailyTodoCount={dailyTodoCounts.get(dateStr) || 0}
-                eventRows={rowMap}
-                isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
-                isToday={isToday(day)}
-                compact={compact}
-                cellBorderColor={cellBorderColor}
-                holiday={getHoliday(dateStr)}
-                showHolidayLabel={viewMode === 'week' && wi === 0 && di === 0}
-                holidayStripeColor={holidayStripeColor}
-                holidayTextColor={holidayTextColor}
-                eventTextColor={eventTextColor}
-                onClick={() => {
-                  useCalendarStore.getState().setCurrentDate(day)
-                }}
-                onDoubleClick={() => {
-                  useCalendarStore.getState().setCurrentDate(day)
-                  onDayDoubleClick?.()
-                }}
-                onRightClick={(e) => {
-                  e.preventDefault()
-                  useCalendarStore.getState().setCurrentDate(day)
-                }}
-              />
-            )
-          })
+                return (
+                  <DayCell
+                    key={`${wi}-${di}`}
+                    day={day}
+                    dateStr={dateStr}
+                    events={sorted}
+                    dailyTodos={dailyTodoSummary.itemsByDate.get(dateStr) || []}
+                    dailyTodoCount={dailyTodoSummary.counts.get(dateStr) || 0}
+                    isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
+                    isToday={dateStr === todayKey}
+                    compact={compact}
+                    cellBorderColor={cellBorderColor}
+                    holiday={getHoliday(dateStr)}
+                    adjustedWorkday={getAdjustedWorkday(dateStr)}
+                    showHolidayLabel={viewMode === 'week' && wi === 0 && di === 0}
+                    holidayStripeColor={holidayStripeColor}
+                    holidayTextColor={holidayTextColor}
+                    eventTextColor={eventTextColor}
+                    onClick={() => {
+                      useCalendarStore.getState().setCurrentDate(day)
+                    }}
+                    onDoubleClick={() => {
+                      useCalendarStore.getState().setCurrentDate(day)
+                      onDayDoubleClick?.()
+                    }}
+                    onRightClick={(e) => {
+                      e.preventDefault()
+                      useCalendarStore.getState().setCurrentDate(day)
+                    }}
+                  />
+                )
+              })}
+            </div>
+          )
         })}
       </div>
     </div>

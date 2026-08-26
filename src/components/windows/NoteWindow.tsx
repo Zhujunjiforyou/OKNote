@@ -1,34 +1,31 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence } from 'framer-motion'
 import { useNotesStore } from '@/stores/notes.store'
 import { useTagStore } from '@/stores/tag.store'
-import { CalendarCheck, Check, Plus, MoreHorizontal, X, GripHorizontal, Settings, Tag, Eye, ListTodo } from 'lucide-react'
+import { Plus, MoreHorizontal, X, GripHorizontal, Settings, Tag } from 'lucide-react'
 import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
-import { DailyTodoPanel } from '@/components/notes/DailyTodoPanel'
 import { useAppSettings } from '@/hooks/useAppSettings'
-import { NOTE_COLOR_PALETTE, hexToLuminance, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { NOTE_COLOR_PALETTE, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
 import type { Note } from '@/types/notes.types'
 import type { EventTag } from '@/types/tag.types'
+import { reportPersistenceIssue } from '@/stores/persistence.store'
+import { clampFontSize, getAdaptiveDisplayFontSize } from '@/lib/typography'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import type { WindowDraftEntry, WindowDraftKind } from '@/types/electron'
+
+const DailyTodoPanel = lazy(() => import('@/components/notes/DailyTodoPanel').then((module) => ({ default: module.DailyTodoPanel })))
 
 interface NoteWindowProps { noteId: string; isNew?: boolean }
-
-function getReadableTextColor(hex: string): string {
-  const luminance = hexToLuminance(hex)
-  const blackContrast = (luminance + 0.05) / 0.05
-  const whiteContrast = 1.05 / (luminance + 0.05)
-  return blackContrast >= whiteContrast ? '#111827' : '#f8fafc'
-}
 
 function createDefaultNote(noteId: string): Note {
   const ts = new Date().toISOString()
   return {
     id: noteId, title: '新便签',
     color: NOTE_COLOR_PALETTE[Math.floor(Math.random() * NOTE_COLOR_PALETTE.length)],
-    transparency: 0.88, items: [], fontFamily: 'Microsoft YaHei',
-    fontSize: 14, isPinned: false, isArchived: false,
+    items: [],
     noteType: 'independent',
     createdAt: ts, updatedAt: ts,
   }
@@ -42,79 +39,98 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const addItem = useNotesStore((s) => s.addItem)
   const loadNotes = useNotesStore((s) => s.loadNotes)
 
-  const { settings, themeMode, loaded } = useAppSettings('notes')
-
-  useEffect(() => {
-    document.documentElement.style.fontSize = settings.fontSize + 'px'
-    return () => { document.documentElement.style.fontSize = '' }
-  }, [settings.fontSize])
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('light', themeMode === 'light')
-    document.documentElement.classList.add('electron-transparent')
-  }, [themeMode])
-
+  const { settings, loaded } = useAppSettings('notes')
   const note = notes.find((n) => n.id === noteId)
+  const noteColorForChrome = normalizeHexColor(note?.color)
 
   useEffect(() => {
-    if (!loaded || !window.electronAPI?.isElectron || notes.find((n) => n.id === noteId)) return
+    document.documentElement.classList.toggle('light', isLightColor(noteColorForChrome))
+    document.documentElement.classList.add('electron-transparent')
+  }, [noteColorForChrome])
 
-    window.electronAPI.loadAppData(`note_${noteId}`).then((data) => {
-      if (data && typeof data === 'object') {
-        const rawNote = data as Record<string, unknown>
-        const normalized = normalizeNote({ ...rawNote, id: typeof rawNote.id === 'string' ? rawNote.id : noteId })
-        loadNotes([normalized])
-        window.electronAPI!.saveAppData(`note_${normalized.id}`, normalized)
-        return
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [loadError, setLoadError] = useState('')
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [confirmAction, setConfirmAction] = useState<'replace-corrupt' | 'delete' | 'discard-quick-hide' | null>(null)
+
+  useEffect(() => {
+    if (!loaded) return
+    if (notes.find((n) => n.id === noteId)) {
+      setLoadState('ready')
+      return
+    }
+    if (!window.electronAPI?.isElectron) {
+      if (isNew) {
+        addNote(createDefaultNote(noteId))
+        setLoadState('ready')
+      } else {
+        setLoadError('浏览器预览无法读取本地便签文件。')
+        setLoadState('error')
       }
-      return window.electronAPI!.loadAppData('notes').then((legacy) => {
-        if (Array.isArray(legacy)) {
-          const found = (legacy as Note[]).find((n: Note) => n.id === noteId)
-          if (found) {
-            const normalized = normalizeNote(found)
-            loadNotes([normalized])
-            window.electronAPI!.saveAppData(`note_${found.id}`, normalized)
-            return
-          }
+      return
+    }
+    let cancelled = false
+    setLoadState('loading')
+    setLoadError('')
+    const load = async () => {
+      try {
+        const data = await window.electronAPI!.loadNote(noteId)
+        if (cancelled) return
+        if (data && typeof data === 'object') {
+          const rawNote = data as Record<string, unknown>
+          loadNotes([normalizeNote({ ...rawNote, id: noteId })])
+          setLoadState('ready')
+          return
         }
         if (isNew) {
           const state = useNotesStore.getState()
           if (!state.notes.find((n) => n.id === noteId)) {
             addNote(createDefaultNote(noteId))
           }
+          setLoadState('ready')
+          return
         }
-      })
-    }).catch((err) => {
-      console.error('NoteWindow init failed:', noteId, err)
-      if (isNew) {
-        const state = useNotesStore.getState()
-        if (!state.notes.find((n) => n.id === noteId)) {
-          addNote(createDefaultNote(noteId))
-        }
+        setLoadError('主文件与备份都无法读取，原文件已保留，未写入任何替代内容。')
+        setLoadState('error')
+      } catch (err) {
+        if (cancelled) return
+        console.error('NoteWindow init failed:', noteId, err)
+        setLoadError(err instanceof Error ? err.message : '便签读取失败。')
+        setLoadState('error')
       }
-    })
-  }, [loaded, noteId, isNew, notes, loadNotes, addNote])
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [loaded, noteId, isNew, notes, loadNotes, addNote, loadAttempt])
 
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
 
   const [newTodo, setNewTodo] = useState('')
+  const [isHiding, setIsHiding] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
   const [showQuickEventForm, setShowQuickEventForm] = useState(false)
+  const [quickEventDirty, setQuickEventDirty] = useState(false)
+  const [childDrafts, setChildDrafts] = useState<Record<string, 'new-todo' | 'todo-edit' | 'date-edit'>>({})
   const [isDockTargetPreview, setIsDockTargetPreview] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
-  const getTagById = useTagStore((s) => s.getTagById)
   const tags = useTagStore((s) => s.tags)
   const loadTags = useTagStore((s) => s.loadTags)
   const menuBtnRef = useRef<HTMLButtonElement>(null)
   const windowDragRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean } | null>(null)
+  const windowDragMoveFrameRef = useRef<number | null>(null)
+  const pendingWindowDragMoveRef = useRef<{ x: number; y: number } | null>(null)
   const suppressTitleClickRef = useRef(false)
 
   const openMenu = useCallback(() => {
     if (menuBtnRef.current) {
       const rect = menuBtnRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 4, left: rect.right - 176 })
+      const menuWidth = Math.min(176, Math.max(144, window.innerWidth - 16))
+      const menuHeight = Math.min(360, Math.max(120, window.innerHeight - 16))
+      const left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth))
+      const top = Math.max(8, Math.min(window.innerHeight - menuHeight - 8, rect.bottom + 4))
+      setMenuPos({ top, left })
     }
     setShowMenu(true)
   }, [])
@@ -126,15 +142,39 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
     return () => document.removeEventListener('click', handler)
   }, [showMenu])
 
+  useEffect(() => () => {
+    if (windowDragMoveFrameRef.current != null) window.cancelAnimationFrame(windowDragMoveFrameRef.current)
+  }, [])
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setShowMenu(false)
+      window.requestAnimationFrame(() => menuBtnRef.current?.focus())
+      return
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    let targetIndex = currentIndex
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') targetIndex = (currentIndex + 1 + items.length) % items.length
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') targetIndex = (currentIndex - 1 + items.length) % items.length
+    else if (event.key === 'Home') targetIndex = 0
+    else if (event.key === 'End') targetIndex = items.length - 1
+    else return
+    event.preventDefault()
+    items[targetIndex]?.focus()
+  }
+
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
-    window.electronAPI.getTags().then((data) => {
+    const reloadTags = () => window.electronAPI!.getTags().then((data) => {
       if (Array.isArray(data)) loadTags(data as import('@/types/tag.types').EventTag[])
-    }).catch(() => {})
+    }).catch((error) => {
+      reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法刷新标签。', reloadTags)
+    })
+    void reloadTags()
     return window.electronAPI.onTagsChanged(() => {
-      window.electronAPI!.getTags().then((data) => {
-        if (Array.isArray(data)) loadTags(data as import('@/types/tag.types').EventTag[])
-      }).catch(() => {})
+      void reloadTags()
     })
   }, [loadTags])
 
@@ -145,11 +185,77 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
     })
   }, [])
 
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return
+    const kinds: WindowDraftKind[] = []
+    if (quickEventDirty) kinds.push('quick-event')
+    if (editingTitle && note && titleDraft !== note.title) kinds.push('note-title')
+    if (newTodo.trim()) kinds.push('new-todo')
+    for (const kind of new Set(Object.values(childDrafts))) kinds.push(kind)
+    const entries: WindowDraftEntry[] = kinds.map((kind) => ({ kind, noteId }))
+    window.electronAPI.setWindowDraftState(entries)
+  }, [childDrafts, editingTitle, newTodo, note?.title, noteId, quickEventDirty, titleDraft])
+
+  const handleChildDraftChange = useCallback((key: string, kind: 'new-todo' | 'todo-edit' | 'date-edit', dirty: boolean) => {
+    setChildDrafts((current) => {
+      if (dirty && current[key] === kind) return current
+      if (!dirty && !(key in current)) return current
+      const next = { ...current }
+      if (dirty) next[key] = kind
+      else delete next[key]
+      return next
+    })
+  }, [])
+
+  const handleTodoDraftChange = useCallback((itemId: string, dirty: boolean) => {
+    handleChildDraftChange(`todo:${itemId}`, 'todo-edit', dirty)
+  }, [handleChildDraftChange])
+
+  useEffect(() => () => {
+    window.electronAPI?.setWindowDraftState([])
+  }, [])
+
   if (!note) {
+    if (loadState === 'error') {
+      return (
+        <div className="note-load-state h-screen w-screen overflow-auto bg-[#08111f] p-4 text-slate-100">
+          <div className="mx-auto flex min-h-full max-w-sm flex-col justify-center">
+            <h1 className="text-base font-semibold">便签无法载入</h1>
+            <p className="mt-2 select-text text-sm leading-relaxed text-slate-300">{loadError}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" onClick={() => setLoadAttempt((value) => value + 1)} className="min-h-9 rounded-lg bg-blue-500 px-3 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
+                重新读取
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmAction('replace-corrupt')}
+                className="min-h-9 rounded-lg bg-white/10 px-3 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300"
+              >
+                创建空白便签
+              </button>
+              <button type="button" onClick={() => window.electronAPI?.closeWindow()} className="min-h-9 rounded-lg px-3 text-sm text-slate-300 hover:bg-white/8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300">
+                关闭窗口
+              </button>
+            </div>
+            <ConfirmDialog
+              open={confirmAction === 'replace-corrupt'}
+              title="创建空白便签？"
+              description="这会替换当前无法读取的主文件；现有备份仍会保留，方便后续人工恢复。"
+              confirmLabel="创建空白便签"
+              destructive
+              onCancel={() => setConfirmAction(null)}
+              onConfirm={() => {
+                setConfirmAction(null)
+                addNote(createDefaultNote(noteId))
+              }}
+            />
+          </div>
+        </div>
+      )
+    }
     return (
-      <div className="h-screen w-screen flex items-center justify-center select-none overflow-hidden animate-note-in">
-        <div className="absolute inset-0 bg-[#08111f]/55 backdrop-blur-xl" />
-        <div className="relative flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/45 shadow-2xl">
+      <div className="h-screen w-screen flex items-center justify-center select-none overflow-hidden bg-[#08111f] animate-note-in">
+        <div className="relative flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm text-slate-300 shadow-xl">
           <span className="h-1.5 w-1.5 rounded-full bg-white/40 animate-pulse" />
           加载便签...
         </div>
@@ -165,7 +271,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
 
   const saveTitle = () => {
     if (titleDraft.trim()) {
-      useNotesStore.getState().updateNote({ ...note, title: titleDraft.trim(), updatedAt: new Date().toISOString() })
+      useNotesStore.getState().updateNote({ ...note, title: titleDraft.trim().slice(0, 200), updatedAt: new Date().toISOString() })
     }
     setEditingTitle(false)
   }
@@ -177,27 +283,77 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
     if (newTodo.trim()) { addItem(note.id, newTodo.trim()); setNewTodo('') }
   }
 
+  const performHide = async () => {
+    if (isHiding || !window.electronAPI?.isElectron) return
+    if (!isDaily && newTodo.trim()) {
+      addItem(note.id, newTodo.trim())
+      setNewTodo('')
+    }
+    let snapshot = useNotesStore.getState().notes.find((item) => item.id === note.id) || note
+    if (editingTitle && titleDraft.trim()) {
+      snapshot = { ...snapshot, title: titleDraft.trim().slice(0, 200), updatedAt: new Date().toISOString() }
+    }
+    setIsHiding(true)
+    try {
+      const result = await window.electronAPI.hideNote(snapshot)
+      if (!result.ok) {
+        reportPersistenceIssue(
+          '便签保持打开',
+          result.message || '当前内容未能完整写入磁盘，已取消隐藏。',
+          () => performHide(),
+        )
+      }
+    } catch (error) {
+      reportPersistenceIssue(
+        '便签保持打开',
+        error instanceof Error ? error.message : '主进程没有响应，已取消隐藏以避免丢失内容。',
+        () => performHide(),
+      )
+    } finally {
+      setIsHiding(false)
+    }
+  }
+
+  const handleHide = async () => {
+    if (showQuickEventForm && quickEventDirty) {
+      setConfirmAction('discard-quick-hide')
+      return
+    }
+    await performHide()
+  }
+
   const handleDeleteNote = () => {
-    deleteNote(note.id)
-    window.electronAPI?.deleteNote(note.id)
+    setConfirmAction('delete')
   }
 
-  const handleDock = () => {
+  const handleDock = async () => {
     if (!window.electronAPI?.isElectron) return
-    const nextNote = { ...note, isDocked: true, updatedAt: new Date().toISOString() }
-    updateNote(nextNote)
-    window.electronAPI.saveAppData(`note_${note.id}`, nextNote)
-    window.electronAPI.dockNote(note.id, nextNote)
+    const nextNote = { ...note, isDocked: true, dockedOrder: note.dockedOrder ?? Date.now(), updatedAt: new Date().toISOString() }
     setShowMenu(false)
+    const result = await window.electronAPI.dockNote(note.id, nextNote)
+    if (!result.ok) {
+      if (result.canceled) return
+      reportPersistenceIssue('便签未挂载', result.message || '当前便签仍保留在原窗口。', () => { void handleDock() })
+      return
+    }
+    if (result.note) updateNote(normalizeNote(result.note))
   }
 
-  const handleUndock = () => {
+  const handleUndock = async () => {
     if (!window.electronAPI?.isElectron) return
     const nextNote = { ...note, isDocked: false, updatedAt: new Date().toISOString() }
-    updateNote(nextNote)
-    window.electronAPI.saveAppData(`note_${note.id}`, nextNote)
-    window.electronAPI.undockNote(note.id, nextNote)
     setShowMenu(false)
+    try {
+      const result = await window.electronAPI.undockNote(note.id, nextNote)
+      if (!result.ok) {
+        if (result.canceled) return
+        reportPersistenceIssue('便签仍保持挂载', result.message || '取消挂载失败，请重试。', () => { void handleUndock() })
+        return
+      }
+      if (result.note) updateNote(normalizeNote(result.note))
+    } catch (error) {
+      reportPersistenceIssue('便签仍保持挂载', error instanceof Error ? error.message : '主进程没有响应。', () => { void handleUndock() })
+    }
   }
 
   const handleWindowDragPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -220,8 +376,16 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
       drag.moved = true
       suppressTitleClickRef.current = true
     }
-    if (window.electronAPI?.isElectron) {
-      window.electronAPI.moveNoteWindowDrag(e.screenX, e.screenY)
+    if (window.electronAPI?.isElectron && drag.moved) {
+      pendingWindowDragMoveRef.current = { x: e.screenX, y: e.screenY }
+      if (windowDragMoveFrameRef.current == null) {
+        windowDragMoveFrameRef.current = window.requestAnimationFrame(() => {
+          windowDragMoveFrameRef.current = null
+          const pending = pendingWindowDragMoveRef.current
+          pendingWindowDragMoveRef.current = null
+          if (pending) window.electronAPI?.moveNoteWindowDrag(pending.x, pending.y)
+        })
+      }
     }
   }
 
@@ -230,6 +394,13 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
     if (!drag || drag.pointerId !== e.pointerId) return
     windowDragRef.current = null
     if (window.electronAPI?.isElectron) {
+      if (windowDragMoveFrameRef.current != null) {
+        window.cancelAnimationFrame(windowDragMoveFrameRef.current)
+        windowDragMoveFrameRef.current = null
+      }
+      const pending = pendingWindowDragMoveRef.current
+      pendingWindowDragMoveRef.current = null
+      if (pending) window.electronAPI.moveNoteWindowDrag(pending.x, pending.y)
       window.electronAPI.endNoteWindowDrag(e.screenX, e.screenY, drag.moved)
     }
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
@@ -241,11 +412,13 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
 
   const isDocked = note.isDocked === true
   const noteColorHex = normalizeHexColor(note.color)
-  const bgHex = noteColorHex.replace('#', '')
+  const noteSurfaceColor = noteColorHex
+  const bgHex = noteSurfaceColor.replace('#', '')
   const noteOpacity = settings.backgroundOpacity
   const bgWithAlpha = `#${bgHex}${Math.round(noteOpacity * 255).toString(16).padStart(2, '0')}`
   const noteFont = settings.fontFamily || 'Microsoft YaHei'
-  const noteFontSize = settings.fontSize || 14
+  const requestedNoteFontSize = clampFontSize(settings.fontSize || 14)
+  const noteFontSize = getAdaptiveDisplayFontSize(requestedNoteFontSize)
   const safeItems = Array.isArray(note.items) ? note.items : ([] as Note['items'])
   const selectedEchoTagIds = isEcho
     ? (Array.isArray(note.viewTagIds) && note.viewTagIds.length > 0
@@ -253,36 +426,24 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
         : (note.echoTagId ? [note.echoTagId] : []))
     : []
   const selectedEchoTags = selectedEchoTagIds
-    .map((tagId) => getTagById(tagId))
+    .map((tagId) => tags.find((tag) => tag.id === tagId))
     .filter((tag): tag is EventTag => !!tag)
 
-  const noteTextColor = getReadableTextColor(noteColorHex)
-  const lightBg = noteTextColor === '#111827'
+  const lightBg = isLightColor(noteSurfaceColor)
+  const noteTextColor = lightBg ? '#111827' : '#f8fafc'
   const noteMutedColor = lightBg ? 'rgba(17, 24, 39, 0.66)' : 'rgba(248, 250, 252, 0.74)'
   const notePanelBg = lightBg ? 'rgba(255,255,255,0.46)' : 'rgba(255,255,255,0.13)'
   const notePanelBorder = lightBg ? 'rgba(17,24,39,0.13)' : 'rgba(255,255,255,0.17)'
 
-  const toggleEchoTag = (tagId: string) => {
-    if (!isEcho) return
-    const current = selectedEchoTagIds
-    const next = current.includes(tagId)
-      ? current.filter((id) => id !== tagId)
-      : [...current, tagId]
-    updateNote({
-      ...note,
-      viewTagIds: next,
-      echoTagId: next[0],
-      updatedAt: new Date().toISOString(),
-    })
-  }
-
   return (
     <div
-      className={`note-window-root h-screen w-screen flex flex-col overflow-hidden select-none animate-note-in ${isEcho ? 'note-window-echo-note' : isDaily ? 'note-window-daily-note' : 'note-window-independent-note'} ${isDockTargetPreview ? 'note-window-dock-target' : ''}`}
+      className={`note-window-root h-screen w-screen flex flex-col overflow-hidden animate-note-in ${isEcho ? 'note-window-echo-note' : isDaily ? 'note-window-daily-note' : 'note-window-independent-note'} ${isDockTargetPreview ? 'note-window-dock-target' : ''} ${requestedNoteFontSize <= 11 ? 'note-type-small' : requestedNoteFontSize >= 25 ? 'note-type-xlarge' : requestedNoteFontSize >= 19 ? 'note-type-large' : ''} ${requestedNoteFontSize >= 37 ? 'note-type-max' : ''}`}
       style={{
         fontFamily: `"${noteFont}", system-ui, sans-serif`,
         color: noteTextColor,
         fontSize: noteFontSize,
+        ['--note-font-size' as string]: `${noteFontSize}px`,
+        ['--note-requested-font-size' as string]: requestedNoteFontSize,
         ['--note-text' as string]: noteTextColor,
         ['--note-muted' as string]: noteMutedColor,
         ['--note-panel' as string]: notePanelBg,
@@ -295,7 +456,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
 
       {/* Title bar */}
       <div
-        className="relative note-window-titlebar flex items-center justify-between px-3 py-2 shrink-0 cursor-grab active:cursor-grabbing"
+        className="relative note-window-titlebar flex items-center justify-between px-3 py-2 shrink-0 cursor-grab active:cursor-grabbing select-none"
         style={{ WebkitAppRegion: 'no-drag', touchAction: 'none' } as React.CSSProperties}
         onPointerDown={handleWindowDragPointerDown}
         onPointerMove={handleWindowDragPointerMove}
@@ -303,43 +464,48 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
         onPointerCancel={handleWindowDragPointerEnd}
       >
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <GripHorizontal size={10} className="opacity-25 shrink-0" />
-          <div className="h-2.5 w-0.5 rounded-full shrink-0" style={{ backgroundColor: noteColorHex, opacity: 0.5 }} />
+          <GripHorizontal size={10} className="opacity-45 shrink-0" />
 
           {editingTitle ? (
             <input
               ref={titleInputRef}
               value={titleDraft}
+              maxLength={200}
               onChange={(e) => setTitleDraft(e.target.value)}
               onBlur={saveTitle}
               onKeyDown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
-              className="flex-1 bg-white/5 rounded px-1.5 py-0.5 text-sm font-semibold outline-none min-w-0"
+              className="note-window-title flex-1 bg-white/5 rounded px-1.5 py-0.5 text-[1em] font-semibold outline-none min-w-0"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              aria-label={`编辑${isEcho ? '标签视图便签' : isDaily ? '每日待办' : '独立便签'}标题`}
               data-no-window-drag
               autoFocus
             />
           ) : (
             <span
-              onDoubleClick={startEditTitle}
-              className="text-sm font-semibold tracking-wide truncate cursor-text hover:opacity-70 transition-opacity"
+              onClick={startEditTitle}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === 'F2') startEditTitle() }}
+              className="note-window-title text-[1em] font-semibold tracking-wide truncate cursor-text hover:opacity-70 transition-opacity"
               style={{ WebkitAppRegion: 'no-drag', color: noteTextColor } as React.CSSProperties}
-              title="双击编辑标题"
+              title="点击编辑标题"
               data-no-window-drag
+              role="button"
+              tabIndex={0}
             >
               {note.title}
             </span>
           )}
-          <span
-            className={`note-type-badge shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.62em] leading-none ${isEcho ? 'note-type-badge-echo' : isDaily ? 'note-type-badge-daily' : 'note-type-badge-independent'}`}
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            {isEcho ? <Eye size={9} /> : isDaily ? <CalendarCheck size={9} /> : <ListTodo size={9} />}
-            {isEcho ? '视图' : isDaily ? '每日' : '独立'}
-          </span>
+          {!isDaily && (
+            <span
+              className={`note-type-badge shrink-0 inline-flex items-center px-1.5 py-0.5 text-[0.62em] leading-none ${isEcho ? 'note-type-badge-echo' : 'note-type-badge-independent'}`}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              {isEcho ? '视图' : '独立'}
+            </span>
+          )}
           {isEcho && (
             selectedEchoTags.length > 0 ? (
               <span
-                className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65em] leading-none"
+                className="note-title-tag shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65em] leading-none"
                 style={{ backgroundColor: notePanelBg, border: `1px solid ${notePanelBorder}`, color: noteTextColor, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               >
                 <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: selectedEchoTags[0].color }} />
@@ -348,7 +514,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
               </span>
             ) : (
               <span
-                className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65em] leading-none opacity-30"
+                className="note-title-tag shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65em] leading-none opacity-30"
                 style={{ backgroundColor: notePanelBg, border: `1px solid ${notePanelBorder}`, color: noteTextColor, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               >
                 <Tag size={9} />
@@ -358,15 +524,18 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
           )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          <button ref={menuBtnRef} onClick={(e) => { e.stopPropagation(); openMenu() }} className="w-5 h-5 rounded flex items-center justify-center opacity-30 hover:opacity-70 transition-opacity">
+          <button ref={menuBtnRef} onClick={(e) => { e.stopPropagation(); openMenu() }} className="w-7 h-7 rounded-md flex items-center justify-center opacity-55 hover:opacity-100 hover:bg-white/10 transition-all" aria-label="打开便签菜单" aria-haspopup="menu" aria-expanded={showMenu}>
             <MoreHorizontal size={11} />
           </button>
           {showMenu && createPortal(
             <div className="fixed inset-0 z-[9999]" onClick={() => setShowMenu(false)}>
               <div
-                className="absolute w-44 bg-background/95 backdrop-blur-xl border border-white/8 rounded-lg shadow-2xl py-1 z-[10000]"
+                className="absolute max-h-[calc(100vh-16px)] w-[min(11rem,calc(100vw-16px))] overflow-y-auto bg-background/95 backdrop-blur-xl border border-white/8 rounded-lg shadow-2xl py-1 z-[10000]"
                 style={{ top: menuPos.top, left: menuPos.left }}
                 onClick={(e) => e.stopPropagation()}
+                role="menu"
+                aria-label="便签操作"
+                onKeyDown={handleMenuKeyDown}
               >
                 <div className="px-2.5 py-1">
                   <div className="flex gap-1 flex-wrap max-w-[152px]">
@@ -374,11 +543,15 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
                       <button
                         key={c}
                         onClick={() => { updateNote({ ...note, color: c, updatedAt: new Date().toISOString() }); setShowMenu(false) }}
-                        className={`w-4 h-4 rounded-full transition-transform hover:scale-125 ${c === noteColorHex ? 'ring-1.5 ring-white/70 ring-offset-1 ring-offset-background' : ''}`}
+                        className={`touch-target w-6 h-6 rounded-full transition-transform hover:scale-110 ${c === noteColorHex ? 'ring-1.5 ring-white/70 ring-offset-1 ring-offset-background' : ''}`}
                         style={{
                           backgroundColor: c,
                           boxShadow: 'inset 0 0 0 1px rgba(15,23,42,0.18), 0 0 0 1px rgba(255,255,255,0.20)',
                         }}
+                        aria-label={`将便签颜色设为 ${c}`}
+                        role="menuitemradio"
+                        aria-checked={c === noteColorHex}
+                        autoFocus={c === NOTE_COLOR_PALETTE[0]}
                       />
                     ))}
                   </div>
@@ -386,24 +559,9 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
                 <hr className="border-white/5" />
                 {isEcho ? (
                   <div>
-                    <div className="px-2.5 py-1">
-                      <p className="text-[0.6em] opacity-25 mb-1">视图标签</p>
-                      <div className="space-y-0.5 max-h-28 overflow-y-auto">
-                        {tags.map((t) => (
-                          <button
-                            key={t.id}
-                            onClick={() => toggleEchoTag(t.id)}
-                            className={`w-full text-left px-2 py-1 text-[0.72em] rounded flex items-center gap-1.5 hover:bg-white/5 transition-colors ${selectedEchoTagIds.includes(t.id) ? 'bg-white/10 opacity-90' : ''}`}
-                          >
-                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
-                            <span className="truncate flex-1">{t.name}</span>
-                            {selectedEchoTagIds.includes(t.id) && <Check size={10} className="opacity-55" />}
-                          </button>
-                        ))}
-                        {tags.length === 0 && (
-                          <p className="text-[0.6em] opacity-20 px-2">暂无标签，请先在设置中创建</p>
-                        )}
-                      </div>
+                    <div className="px-2.5 py-1.5">
+                      <p className="text-[0.6em] opacity-35">绑定标签</p>
+                      <p className="mt-0.5 truncate text-[0.72em] opacity-70">{selectedEchoTags.map((tag) => tag.name).join('、') || '标签已删除'}</p>
                     </div>
                     <hr className="border-white/5" />
                   </div>
@@ -414,27 +572,30 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
                 )}
                 <hr className="border-white/5" />
                 {isDocked ? (
-                  <button onClick={handleUndock} className="w-full text-left px-2.5 py-1 text-[0.8em] opacity-50 hover:opacity-80 hover:bg-white/5 transition-colors">
+                  <button onClick={handleUndock} className="min-h-8 w-full text-left px-2.5 py-1 text-[0.8em] opacity-50 hover:opacity-80 hover:bg-white/5 transition-colors" role="menuitem">
                     取消挂载
                   </button>
                 ) : (
-                  <button onClick={handleDock} className="w-full text-left px-2.5 py-1 text-[0.8em] opacity-50 hover:opacity-80 hover:bg-white/5 transition-colors">
+                  <button onClick={() => { void handleDock() }} className="min-h-8 w-full text-left px-2.5 py-1 text-[0.8em] opacity-50 hover:opacity-80 hover:bg-white/5 transition-colors" role="menuitem">
                     挂载到日历
                   </button>
                 )}
-                <button onClick={handleDeleteNote} className="w-full text-left px-2.5 py-1 text-[0.8em] text-red-400/70 hover:text-red-400 hover:bg-red-500/5 transition-colors">
-                  删除
+                <button onClick={handleDeleteNote} className="min-h-8 w-full text-left px-2.5 py-1 text-[0.8em] text-red-400/70 hover:text-red-400 hover:bg-red-500/5 transition-colors" role="menuitem">
+                  移入回收站
                 </button>
               </div>
             </div>,
             document.body
           )}
-          <button onClick={() => window.electronAPI?.openSettings()} className="w-5 h-5 rounded flex items-center justify-center opacity-20 hover:opacity-70 transition-all" title="设置">
+          <button onClick={() => window.electronAPI?.openSettings()} className="w-7 h-7 rounded-md flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-white/10 transition-all" title="设置" aria-label="打开设置">
             <Settings size={11} />
           </button>
           <button
-            onClick={() => window.electronAPI?.hideNote()}
-            className="w-5 h-5 rounded flex items-center justify-center opacity-20 hover:opacity-70 hover:text-red-400 transition-all"
+            onClick={() => { void handleHide() }}
+            disabled={isHiding}
+            className="w-7 h-7 rounded-md flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-white/10 hover:text-red-500 transition-all"
+            aria-label="隐藏便签"
+            title={isHiding ? '正在保存便签' : '隐藏便签'}
           >
             <X size={11} />
           </button>
@@ -454,28 +615,38 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
       {isEcho ? (
         <EchoEventList
           note={note}
+          surfaceColor={noteSurfaceColor}
+          textColor={noteTextColor}
           onSelectEvent={(event) => {
             window.electronAPI?.openEventEditor(event)
           }}
         />
       ) : isDaily ? (
-        <DailyTodoPanel
-          note={note}
-          panelBg={notePanelBg}
-          panelBorder={notePanelBorder}
-          textColor={noteTextColor}
-          mutedColor={noteMutedColor}
-          lightBg={lightBg}
-        />
+        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs opacity-40">加载每日待办…</div>}>
+          <DailyTodoPanel
+            note={note}
+            panelBg={notePanelBg}
+            panelBorder={notePanelBorder}
+            textColor={noteTextColor}
+            mutedColor={noteMutedColor}
+            lightBg={lightBg}
+            onDraftChange={handleChildDraftChange}
+          />
+        </Suspense>
       ) : (
         <div className="relative flex-1 px-3 py-1.5 space-y-1 overflow-y-auto overflow-x-hidden">
           <AnimatePresence initial={false}>
             {safeItems.map((item) => (
-              <TodoItem key={item.id} item={item} note={note} />
+              <TodoItem
+                key={item.id}
+                item={item}
+                note={note}
+                onDraftChange={handleTodoDraftChange}
+              />
             ))}
           </AnimatePresence>
           {safeItems.length === 0 && (
-            <p className="text-[0.8em] opacity-10 py-3 text-center">输入待办事项...</p>
+            <p className="text-[0.8em] opacity-35 py-3 text-center">输入待办事项...</p>
           )}
         </div>
       )}
@@ -485,8 +656,11 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
         showQuickEventForm ? (
           <QuickEventForm
             note={note}
+            surfaceColor={noteSurfaceColor}
+            textColor={noteTextColor}
             onClose={closeQuickEventForm}
             onSaved={closeQuickEventForm}
+            onDirtyChange={setQuickEventDirty}
           />
         ) : (
           <div className="relative px-3 pb-2.5 pt-1 shrink-0">
@@ -511,27 +685,53 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
               borderColor: notePanelBorder,
             }}
           >
-            <button
-              type="button"
-              onClick={handleAddTodo}
-              className="shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-opacity"
-              style={{ opacity: 0.7, backgroundColor: lightBg ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.14)' }}
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleAddTodo}
+              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-opacity"
+                style={{ opacity: 0.7, backgroundColor: lightBg ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.14)' }}
+                aria-label="添加待办"
             >
               <Plus size={12} />
             </button>
             <input
               type="text"
               value={newTodo}
+              maxLength={2000}
               onChange={(e) => setNewTodo(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+              onBlur={handleAddTodo}
               placeholder="添加待办..."
-              className="flex-1 bg-transparent text-[0.85em] outline-none placeholder:opacity-70"
+              className="min-w-0 flex-1 bg-transparent text-[0.85em] outline-none placeholder:opacity-70"
               onFocus={() => setShowMenu(false)}
               style={{ color: noteTextColor }}
+              aria-label="待办内容"
             />
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={confirmAction === 'delete' || confirmAction === 'discard-quick-hide'}
+        title={confirmAction === 'discard-quick-hide' ? '放弃未保存的事件并隐藏？' : '将便签移入回收站？'}
+        description={confirmAction === 'discard-quick-hide'
+          ? '快速事件表单已有内容。继续后会放弃本次输入，再隐藏便签。'
+          : `“${note.title}”会从桌面移除，可稍后在设置的“便签管理”中恢复。`}
+        confirmLabel={confirmAction === 'discard-quick-hide' ? '放弃并隐藏' : '移入回收站'}
+        destructive
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => {
+          if (confirmAction === 'discard-quick-hide') {
+            setShowQuickEventForm(false)
+            setQuickEventDirty(false)
+            setConfirmAction(null)
+            window.requestAnimationFrame(() => { void performHide() })
+            return
+          }
+          setConfirmAction(null)
+          deleteNote(note.id)
+        }}
+      />
     </div>
   )
 }

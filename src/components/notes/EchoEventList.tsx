@@ -1,15 +1,19 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { CalendarEvent } from '@/types/calendar.types'
 import type { Note } from '@/types/notes.types'
 import { useTagStore } from '@/stores/tag.store'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { Clock, Repeat } from 'lucide-react'
-import { addDaysToDateKey, expandEventsInRange, getEventInstanceKey, getLocalDateKey, hexToLuminance, normalizeHexColor } from '@/lib/utils'
+import { getEventInstanceKey, getTagViewEventInstances, hexToLuminance, normalizeCalendarEvents, normalizeHexColor } from '@/lib/utils'
+import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
+import { reportPersistenceIssue } from '@/stores/persistence.store'
 
 interface EchoEventListProps {
   note: Note
   onSelectEvent?: (event: CalendarEvent) => void
   compact?: boolean
+  surfaceColor?: string
+  textColor?: string
 }
 
 function readableTextOn(hex: string): string {
@@ -17,16 +21,17 @@ function readableTextOn(hex: string): string {
   return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? '#111827' : '#f8fafc'
 }
 
-export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEventListProps) {
+export function EchoEventList({ note, onSelectEvent, compact = false, surfaceColor, textColor: configuredTextColor }: EchoEventListProps) {
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const calendarEvents = useCalendarStore((s) => s.events)
-  const getTagById = useTagStore((s) => s.getTagById)
+  const tags = useTagStore((s) => s.tags)
   const selectedTagIds = Array.isArray(note.viewTagIds) && note.viewTagIds.length > 0
     ? note.viewTagIds
     : (note.echoTagId ? [note.echoTagId] : [])
   const selectedTagKey = selectedTagIds.join('|')
-  const selectedTags = selectedTagIds.map((tagId) => getTagById(tagId)).filter(Boolean)
-  const noteTextColor = readableTextOn(note.color)
+  const selectedTags = selectedTagIds.map((tagId) => tags.find((tag) => tag.id === tagId)).filter(Boolean)
+  const today = useCurrentDateKey()
+  const noteTextColor = configuredTextColor || readableTextOn(surfaceColor || note.color)
   const lightNote = noteTextColor === '#111827'
   const surfaceBg = lightNote ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.14)'
   const recurringSurfaceBg = lightNote ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'
@@ -42,40 +47,17 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
     const bValue = `${b.startDate || ''}T${b.isAllDay ? '00:00' : (b.startTime || '23:59')}`
     return aValue.localeCompare(bValue)
   }
-  const expandEchoEvents = (source: CalendarEvent[]) => {
-    const today = getLocalDateKey()
-    const rangeEnd = addDaysToDateKey(today, 180)
-    const recurring = source.filter((event) => event.recurrence)
-    const oneTime = source.filter((event) => !event.recurrence)
-    const nearestRecurring = new Map<string, CalendarEvent>()
-
-    for (const event of expandEventsInRange(recurring, today, rangeEnd)) {
-      const key = event.seriesId || event.id
-      const current = nearestRecurring.get(key)
-      if (!current || compareEventStart(event, current) < 0) nearestRecurring.set(key, event)
-    }
-
-    const missingPast = recurring.filter((event) => !nearestRecurring.has(event.id))
-    if (missingPast.length > 0) {
-      const pastStart = addDaysToDateKey(today, -30)
-      const pastEnd = addDaysToDateKey(today, -1)
-      for (const event of expandEventsInRange(missingPast, pastStart, pastEnd)) {
-        const key = event.seriesId || event.id
-        const current = nearestRecurring.get(key)
-        if (!current || compareEventStart(event, current) > 0) nearestRecurring.set(key, event)
-      }
-    }
-
-    return [...oneTime, ...nearestRecurring.values()]
-  }
+  const visibleEvents = useMemo(() => {
+    return getTagViewEventInstances(events, today)
+  }, [events, today])
 
   const applyEventsSnapshot = (snapshot: unknown[]) => {
     const merged = new Map<string, CalendarEvent>()
-    for (const event of snapshot as CalendarEvent[]) {
+    for (const event of normalizeCalendarEvents(snapshot)) {
       if (!event?.id || !event.tagId || !selectedTagIds.includes(event.tagId)) continue
       merged.set(event.seriesId || event.id, event)
     }
-    setEvents(expandEchoEvents([...merged.values()]))
+    setEvents([...merged.values()])
   }
 
   const loadEvents = async () => {
@@ -88,13 +70,14 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
       const merged = new Map<string, CalendarEvent>()
       for (const data of results) {
         if (!Array.isArray(data)) continue
-        for (const event of data as CalendarEvent[]) {
+        for (const event of normalizeCalendarEvents(data)) {
           merged.set(event.seriesId || event.id, event)
         }
       }
-      setEvents(expandEchoEvents([...merged.values()]))
+      setEvents([...merged.values()])
     } catch (e) {
       console.error('EchoEventList loadEvents failed:', e)
+      reportPersistenceIssue('回响事件读取失败', e instanceof Error ? e.message : '无法读取标签下的事件。', loadEvents)
     }
   }
 
@@ -119,21 +102,22 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
     })
   }, [selectedTagKey])
 
-  // Sort: future dates first, then by startDate descending, then by time
-  const sorted = [...events].sort((a, b) => {
+  // Upcoming events are easiest to act on; history follows in reverse order.
+  const sorted = [...visibleEvents].sort((a, b) => {
     const sa = typeof a.startDate === 'string' ? a.startDate : ''
     const sb = typeof b.startDate === 'string' ? b.startDate : ''
-    const dateCompare = sa.localeCompare(sb)
+    const aFuture = (a.endDate || sa) >= today
+    const bFuture = (b.endDate || sb) >= today
+    if (aFuture !== bFuture) return aFuture ? -1 : 1
+    const dateCompare = aFuture ? sa.localeCompare(sb) : sb.localeCompare(sa)
     if (dateCompare !== 0) return dateCompare
-    if (a.startTime && b.startTime) return a.startTime.localeCompare(b.startTime)
-    if (a.startTime) return -1
-    if (b.startTime) return 1
-    return 0
+    const sameDayCompare = compareEventStart(a, b)
+    return aFuture ? sameDayCompare : -sameDayCompare
   })
 
-  if (events.length === 0) {
+  if (visibleEvents.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-center px-4">
+      <div className="echo-empty-state flex-1 flex flex-col items-center justify-center text-center px-4">
         <p className="text-[0.9em] opacity-35 py-3">
           {selectedTags.length > 0 ? '所选标签下暂无事件' : '请先选择监听标签'}
         </p>
@@ -169,10 +153,10 @@ export function EchoEventList({ note, onSelectEvent, compact = false }: EchoEven
             <div className={`${compact ? 'text-[0.58em]' : 'text-[0.62em]'} leading-none whitespace-nowrap`} style={{ color: mutedColor }}>
               {compact
                 ? (event.startDate ? `${Number(event.startDate.slice(5, 7))}月` : '')
-                : (event.startDate ? new Date(event.startDate).toLocaleDateString('zh-CN', { month: 'short' }) : '')}
+                : (event.startDate ? `${Number(event.startDate.slice(5, 7))}月` : '')}
             </div>
             <div className={`${compact ? 'text-[0.82em]' : 'text-[0.95em]'} font-semibold leading-tight`} style={{ color: noteTextColor }}>
-              {event.startDate ? new Date(event.startDate).getDate() : '?'}
+              {event.startDate ? Number(event.startDate.slice(8, 10)) : '?'}
             </div>
           </div>
 

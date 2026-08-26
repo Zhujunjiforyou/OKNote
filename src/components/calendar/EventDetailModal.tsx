@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
 import { Button } from '@/components/ui/button'
@@ -5,6 +6,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { X, Pencil, Trash2, Clock, MapPin, Tag, Repeat, Bell } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { CalendarEvent } from '@/types/calendar.types'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { getEventInstanceRange } from '@/lib/utils'
 
 function recurrenceLabel(event: CalendarEvent): string {
   const recurrence = event.recurrence
@@ -24,19 +28,32 @@ function reminderLabel(minutes: number): string {
 }
 
 export function EventDetailModal() {
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
+  const selectedEventOccurrenceDate = useCalendarStore((s) => s.selectedEventOccurrenceDate)
   const events = useCalendarStore((s) => s.events)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
-  const getTagById = useTagStore((s) => s.getTagById)
+  const tags = useTagStore((s) => s.tags)
 
   const event = events.find((e) => e.id === selectedEventId)
-  const eventTag = event?.tagId ? getTagById(event.tagId) : null
+  const dialogRef = useDialogFocusTrap(!!event)
+  const eventTag = event?.tagId ? tags.find((tag) => tag.id === event.tagId) : null
+  const instanceRange = event ? getEventInstanceRange(event, selectedEventOccurrenceDate) : null
+  const isRecurring = !!event?.recurrence
+
+  useEffect(() => {
+    if (!event) return
+    const closeOnEscape = (keyboardEvent: KeyboardEvent) => { if (keyboardEvent.key === 'Escape') selectEvent(null) }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [event, selectEvent])
 
   return (
-    <AnimatePresence>
-      {event && (
+    <>
+      <AnimatePresence>
+        {event && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -45,12 +62,16 @@ export function EventDetailModal() {
           onClick={() => selectEvent(null)}
         >
           <motion.div
+            ref={dialogRef}
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
             onClick={(e) => e.stopPropagation()}
             className="w-[380px] max-h-[80vh] overflow-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="event-detail-title"
           >
             <Card className="border shadow-lg">
               {/* Color bar */}
@@ -58,10 +79,11 @@ export function EventDetailModal() {
 
               <CardContent className="pt-5">
                 <div className="flex items-start justify-between mb-4">
-                  <h2 className="text-base font-semibold pr-4">{event.title}</h2>
+                  <h2 id="event-detail-title" className="text-base font-semibold pr-4">{event.title}</h2>
                   <button
                     onClick={() => selectEvent(null)}
-                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-colors"
+                    className="shrink-0 w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-colors"
+                    aria-label="关闭事件详情"
                   >
                     <X size={15} />
                   </button>
@@ -80,7 +102,8 @@ export function EventDetailModal() {
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Clock size={14} />
                     <span>
-                      {event.startDate}
+                      {instanceRange?.startDate}
+                      {instanceRange?.endDate && ` 至 ${instanceRange.endDate}`}
                       {event.startTime && ` ${event.startTime}`}
                       {event.endTime && ` - ${event.endTime}`}
                       {event.isAllDay && ' (全天)'}
@@ -88,16 +111,21 @@ export function EventDetailModal() {
                   </div>
 
                   {event.recurrence && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Repeat size={14} />
-                      <span>{recurrenceLabel(event)}循环{event.recurrence.until ? `，至 ${event.recurrence.until}` : ''}</span>
+                    <div className="flex items-start gap-2 text-muted-foreground">
+                      <Repeat size={14} className="mt-0.5 shrink-0" />
+                      <div className="min-w-0">
+                        <div>{recurrenceLabel(event)}循环{event.recurrence.until ? `，至 ${event.recurrence.until}` : ''}</div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed">
+                          当前实例为 {instanceRange?.startDate}；编辑和删除会作用于整个循环系列。
+                        </p>
+                      </div>
                     </div>
                   )}
 
                   {event.reminder?.enabled && (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Bell size={14} />
-                      <span>{reminderLabel(event.reminder.minutesBefore)}{event.reminder.playSound ? '，带提示音' : ''}</span>
+                      <span>{reminderLabel(event.reminder.minutesBefore)}{event.isAllDay ? '，当天 09:00' : ''}{event.reminder.playSound ? '，带提示音' : ''}</span>
                     </div>
                   )}
 
@@ -121,25 +149,39 @@ export function EventDetailModal() {
                     }}
                   >
                     <Pencil size={13} />
-                    编辑
+                    {isRecurring ? '编辑整个系列' : '编辑'}
                   </Button>
                   <Button
                     variant="destructive"
                     size="sm"
                     className="gap-1.5"
-                    onClick={() => {
-                      deleteEvent(event.id)
-                    }}
+                    onClick={() => setDeleteConfirmOpen(true)}
                   >
                     <Trash2 size={13} />
-                    删除
+                    {isRecurring ? '删除系列' : '删除'}
                   </Button>
                 </div>
               </CardContent>
             </Card>
           </motion.div>
         </motion.div>
-      )}
-    </AnimatePresence>
+        )}
+      </AnimatePresence>
+      <ConfirmDialog
+        open={deleteConfirmOpen && !!event}
+        title={isRecurring ? '删除整个循环系列？' : '删除这个事件？'}
+        description={isRecurring
+          ? `“${event?.title || '未命名事件'}”的全部循环实例都会被删除，且无法撤销。`
+          : `“${event?.title || '未命名事件'}”删除后无法撤销。`}
+        confirmLabel={isRecurring ? '删除整个系列' : '删除事件'}
+        destructive
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          if (event) deleteEvent(event.id)
+          setDeleteConfirmOpen(false)
+          selectEvent(null)
+        }}
+      />
+    </>
   )
 }
