@@ -21,9 +21,9 @@ export class ErrorBoundary extends Component<Props, State> {
     }
     // Persist crash info to disk for debugging
     try {
-      const win = window as unknown as { electronAPI?: { saveAppData?: (k: string, v: unknown) => void } }
-      if (win.electronAPI?.saveAppData && !error.message?.includes('electronAPI')) {
-        win.electronAPI.saveAppData('__crash_log', {
+      const win = window as unknown as { electronAPI?: { reportCrash?: (value: unknown) => void } }
+      if (win.electronAPI?.reportCrash && !error.message?.includes('electronAPI')) {
+        win.electronAPI.reportCrash({
           message: error.message,
           stack: error.stack,
           componentStack: errorInfo.componentStack?.slice(0, 3000),
@@ -37,22 +37,20 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="h-screen w-screen flex items-center justify-center bg-[#08111f] select-none overflow-auto p-4">
-          <div className="text-left space-y-1 max-w-full">
-            <div className="text-sm text-red-400 font-semibold mb-2">应用出现错误</div>
-            <div className="text-xs text-red-300/80 whitespace-pre-wrap break-all" style={{ maxWidth: '90vw' }}>
-              {this.state.error?.message || '未知错误'}
+        <div className="h-screen w-screen flex items-center justify-center bg-[#08111f] overflow-auto p-5 text-slate-100">
+          <div className="w-full max-w-sm rounded-2xl border border-red-400/20 bg-slate-950/80 p-5 shadow-2xl">
+            <h1 className="text-base font-semibold text-red-300">这个窗口暂时无法显示</h1>
+            <p className="mt-2 select-text text-sm leading-relaxed text-slate-300">
+              诊断信息已保存在本机。你可以重新载入窗口；如果问题仍然出现，请保留数据目录后再反馈。
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button type="button" onClick={() => window.location.reload()} className="min-h-9 rounded-lg bg-blue-500 px-3 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
+                重新载入
+              </button>
+              <button type="button" onClick={() => window.electronAPI?.closeWindow()} className="min-h-9 rounded-lg px-3 text-sm text-slate-300 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300">
+                关闭窗口
+              </button>
             </div>
-            {this.state.error?.stack && (
-              <pre className="text-[10px] text-white/30 mt-2 whitespace-pre-wrap break-all max-h-[300px] overflow-auto" style={{ maxWidth: '90vw' }}>
-                {this.state.error.stack}
-              </pre>
-            )}
-            {this.state.errorInfo && (
-              <pre className="text-[9px] text-white/15 mt-1 whitespace-pre-wrap break-all max-h-[200px] overflow-auto">
-                {this.state.errorInfo.slice(0, 2000)}
-              </pre>
-            )}
           </div>
         </div>
       )

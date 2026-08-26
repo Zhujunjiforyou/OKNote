@@ -1,10 +1,11 @@
 import { create } from 'zustand'
-import { Note, NoteItem, CountdownItem } from '@/types/notes.types'
+import { Note, NoteItem } from '@/types/notes.types'
 import { generateId } from '@/lib/utils'
+import { reportPersistenceIssue } from '@/stores/persistence.store'
+import type { NoteSaveResult } from '@/types/electron'
 
 interface NotesStore {
   notes: Note[]
-  countdowns: CountdownItem[]
 
   addNote: (note: Note) => void
   updateNote: (note: Note) => void
@@ -12,53 +13,89 @@ interface NotesStore {
 
   addItem: (noteId: string, content: string, options?: { todoDate?: string }) => void
   toggleItem: (noteId: string, itemId: string) => void
-  deleteItem: (noteId: string, itemId: string) => void
+  deleteItem: (noteId: string, itemId: string) => NoteItem | null
+  restoreItem: (noteId: string, item: NoteItem, index: number) => void
   updateItemContent: (noteId: string, itemId: string, content: string) => void
 
-  addCountdown: (c: CountdownItem) => void
-  deleteCountdown: (id: string) => void
-
   loadNotes: (notes: Note[]) => void
-  loadCountdowns: (countdowns: CountdownItem[]) => void
 }
 
-// Debounced per-note file save/delete helpers
-const noteSaveTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+interface NoteSaveQueueState {
+  running: boolean
+  pending: Note | null
+  revision: number
+}
+
+const noteSaveQueues = new Map<string, NoteSaveQueueState>()
+
+function noteRevision(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0
+  const revision = (value as { revision?: unknown }).revision
+  return Number.isInteger(revision) && Number(revision) >= 0 ? Number(revision) : 0
+}
+
+function reportNoteSaveFailure(note: Note, result: NoteSaveResult) {
+  const conflict = result.code === 'conflict'
+  reportPersistenceIssue(
+    conflict ? '便签存在编辑冲突' : '便签尚未保存',
+    result.message || (conflict
+      ? '这张便签已在另一个窗口中更新；当前内容仍保留在本窗口，没有覆盖磁盘数据。'
+      : `“${note.title || '未命名便签'}”未能写入磁盘，当前内容仍保留。`),
+    conflict ? undefined : () => saveNoteFile(useNotesStore.getState().notes.find((item) => item.id === note.id) || note),
+  )
+}
+
+async function drainNoteSaveQueue(noteId: string, state: NoteSaveQueueState) {
+  if (!window.electronAPI?.isElectron || state.running) return
+  state.running = true
+  try {
+    while (state.pending) {
+      const queued = state.pending
+      state.pending = null
+      const snapshot = { ...queued, revision: state.revision }
+      let result: NoteSaveResult
+      try {
+        result = await window.electronAPI.saveNote(noteId, snapshot)
+      } catch (error) {
+        result = {
+          ok: false,
+          code: 'save_failed',
+          message: error instanceof Error ? error.message : '主进程没有响应，当前内容仍保留在窗口中。',
+        }
+      }
+      if (!result.ok) {
+        state.pending = null
+        reportNoteSaveFailure(queued, result)
+        break
+      }
+      const persistedRevision = noteRevision(result.note)
+      state.revision = persistedRevision > state.revision ? persistedRevision : state.revision + 1
+      useNotesStore.setState((current) => ({
+        notes: current.notes.map((note) => note.id === noteId ? { ...note, revision: state.revision } : note),
+      }))
+    }
+  } finally {
+    state.running = false
+    if (state.pending) void drainNoteSaveQueue(noteId, state)
+  }
+}
+
 const saveNoteFile = (note: Note) => {
-  if (window.electronAPI?.isElectron) {
-    if (noteSaveTimers[note.id]) clearTimeout(noteSaveTimers[note.id])
-    noteSaveTimers[note.id] = setTimeout(() => {
-      window.electronAPI!.saveAppData(`note_${note.id}`, note).then((ok) => {
-        if (!ok) console.error('saveNoteFile failed for:', note.id)
-      })
-      delete noteSaveTimers[note.id]
-    }, 300)
+  if (!window.electronAPI?.isElectron) return
+  let state = noteSaveQueues.get(note.id)
+  if (!state) {
+    state = { running: false, pending: null, revision: noteRevision(note) }
+    noteSaveQueues.set(note.id, state)
+  } else if (!state.running && !state.pending) {
+    state.revision = noteRevision(note)
   }
-}
-const deleteNoteFile = (noteId: string) => {
-  if (window.electronAPI?.isElectron) {
-    if (noteSaveTimers[noteId]) { clearTimeout(noteSaveTimers[noteId]); delete noteSaveTimers[noteId] }
-    window.electronAPI.deleteAppData(`note_${noteId}`).then((ok) => {
-      if (!ok) console.error('deleteNoteFile failed for:', noteId)
-    })
-  }
-}
-
-let countdownSaveTimer: ReturnType<typeof setTimeout> | null = null
-const saveCountdowns = () => {
-  if (window.electronAPI?.isElectron) {
-    if (countdownSaveTimer) clearTimeout(countdownSaveTimer)
-    countdownSaveTimer = setTimeout(() => {
-      window.electronAPI!.saveAppData('countdowns', useNotesStore.getState().countdowns)
-      countdownSaveTimer = null
-    }, 300)
-  }
+  state.pending = { ...note }
+  void drainNoteSaveQueue(note.id, state)
 }
 const now = () => new Date().toISOString()
 
 export const useNotesStore = create<NotesStore>((set) => ({
   notes: [],
-  countdowns: [],
 
   addNote: (note) => {
     set((s) => ({ notes: [note, ...s.notes] }))
@@ -69,8 +106,21 @@ export const useNotesStore = create<NotesStore>((set) => ({
     saveNoteFile(note)
   },
   deleteNote: (id) => {
+    if (window.electronAPI?.isElectron) {
+      void window.electronAPI.deleteNote(id).then((result) => {
+        if (result.ok) {
+          noteSaveQueues.delete(id)
+          set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }))
+          return
+        }
+        if (result.canceled) return
+        reportPersistenceIssue('便签未删除', result.message || '便签未能移入回收站。', () => useNotesStore.getState().deleteNote(id))
+      }).catch((error) => {
+        reportPersistenceIssue('便签未删除', error instanceof Error ? error.message : '主进程没有响应。', () => useNotesStore.getState().deleteNote(id))
+      })
+      return
+    }
     set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }))
-    deleteNoteFile(id)
   },
 
   addItem: (noteId, content, options) => {
@@ -122,13 +172,32 @@ export const useNotesStore = create<NotesStore>((set) => ({
   },
 
   deleteItem: (noteId, itemId) => {
+    let deletedItem: NoteItem | null = null
     set((s) => {
       const updated = s.notes.map((n) =>
-        n.id === noteId
-          ? { ...n, updatedAt: now(), items: n.items.filter((i) => i.id !== itemId) }
-          : n
+        n.id === noteId ? (() => {
+          deletedItem = n.items.find((item) => item.id === itemId) || null
+          return deletedItem
+            ? { ...n, updatedAt: now(), items: n.items.filter((item) => item.id !== itemId) }
+            : n
+        })() : n
       )
       const note = updated.find((n) => n.id === noteId)
+      if (note && deletedItem) saveNoteFile(note)
+      return { notes: updated }
+    })
+    return deletedItem
+  },
+
+  restoreItem: (noteId, item, index) => {
+    set((s) => {
+      const updated = s.notes.map((note) => {
+        if (note.id !== noteId || note.items.some((existing) => existing.id === item.id)) return note
+        const items = [...note.items]
+        items.splice(Math.max(0, Math.min(index, items.length)), 0, item)
+        return { ...note, updatedAt: now(), items }
+      })
+      const note = updated.find((entry) => entry.id === noteId)
       if (note) saveNoteFile(note)
       return { notes: updated }
     })
@@ -147,15 +216,5 @@ export const useNotesStore = create<NotesStore>((set) => ({
     })
   },
 
-  addCountdown: (c) => {
-    set((s) => ({ countdowns: [c, ...s.countdowns] }))
-    saveCountdowns()
-  },
-  deleteCountdown: (id) => {
-    set((s) => ({ countdowns: s.countdowns.filter((c) => c.id !== id) }))
-    saveCountdowns()
-  },
-
   loadNotes: (notes) => set({ notes }),
-  loadCountdowns: (countdowns) => set({ countdowns }),
 }))

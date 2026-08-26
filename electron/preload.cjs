@@ -15,11 +15,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── System fonts ──
   getSystemFonts: () => ipcRenderer.invoke('get-system-fonts'),
+  onSystemFontsChanged: (callback) => {
+    const handler = (_event, fonts) => callback(fonts);
+    ipcRenderer.on('system-fonts-changed', handler);
+    return () => ipcRenderer.removeListener('system-fonts-changed', handler);
+  },
+  setReducedMotion: (reduced) => ipcRenderer.send('set-reduced-motion', reduced === true),
 
   // ── Window ──
   closeWindow: () => ipcRenderer.send('window-close'),
-  hideNote: () => ipcRenderer.send('hide-note'),
-  hideNoteById: (noteId) => ipcRenderer.send('hide-note-by-id', noteId),
+  setWindowDraftState: (entries) => ipcRenderer.send('set-window-draft-state', entries),
+  confirmWindowDraftAction: (actionLabel, noteId) => ipcRenderer.invoke('confirm-window-draft-action', actionLabel, noteId),
+  hideNote: (noteSnapshot) => ipcRenderer.invoke('hide-note', noteSnapshot),
+  hideNoteById: (noteId) => ipcRenderer.invoke('hide-note-by-id', noteId),
 
   // ── Actions from main process ──
   onAction: (callback) => {
@@ -30,24 +38,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Note management (for launcher) ──
   createNote: (options) => ipcRenderer.send('create-note', options),
-  deleteNote: (noteId) => ipcRenderer.send('delete-note', noteId),
+  deleteNote: (noteId) => ipcRenderer.invoke('delete-note', noteId),
+  listDeletedNotes: () => ipcRenderer.invoke('list-deleted-notes'),
+  restoreDeletedNote: (trashId) => ipcRenderer.invoke('restore-deleted-note', trashId),
+  permanentlyDeleteNote: (trashId) => ipcRenderer.invoke('permanently-delete-note', trashId),
   showNote: (noteId) => ipcRenderer.send('show-note', noteId),
-  getVisibleNoteIds: () => ipcRenderer.invoke('get-visible-note-ids'),
   openSettings: () => ipcRenderer.send('open-settings'),
   tidyNotes: () => ipcRenderer.send('tidy-notes'),
   dismissReminderToast: () => ipcRenderer.send('dismiss-reminder-toast'),
-  setAutoLaunch: (enabled) => ipcRenderer.send('set-auto-launch', enabled),
-  showDayContextMenu: (dateStr, screenX, screenY) => ipcRenderer.send('show-day-context-menu', dateStr, screenX, screenY),
+  getReminderHistory: () => ipcRenderer.invoke('get-reminder-history'),
+  markReminderHistoryRead: (id) => ipcRenderer.invoke('mark-reminder-history-read', id),
+  onReminderHistoryChanged: (callback) => {
+    const handler = (_event, history) => callback(history);
+    ipcRenderer.on('reminder-history-changed', handler);
+    return () => ipcRenderer.removeListener('reminder-history-changed', handler);
+  },
+  onPersistenceFailure: (callback) => {
+    const handler = (_event, issue) => callback(issue);
+    ipcRenderer.on('persistence-failed', handler);
+    return () => ipcRenderer.removeListener('persistence-failed', handler);
+  },
+  setAutoLaunch: (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),
+  setStartMinimized: (enabled) => ipcRenderer.invoke('set-start-minimized', enabled),
   openEventEditor: (eventData) => ipcRenderer.send('open-event-editor', eventData),
   onOpenEventEditor: (callback) => {
     const handler = (_event, eventData) => callback(eventData);
     ipcRenderer.on('open-event-editor', handler);
     return () => ipcRenderer.removeListener('open-event-editor', handler);
-  },
-  onDayContextAction: (callback) => {
-    const handler = (_event, payload) => callback(payload);
-    ipcRenderer.on('day-context-action', handler);
-    return () => ipcRenderer.removeListener('day-context-action', handler);
   },
   onFocusNote: (callback) => {
     const handler = (_event, payload) => callback(payload);
@@ -55,12 +72,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('focus-note', handler);
   },
 
-  // ── Data persistence ──
-  saveAppData: (key, data) => ipcRenderer.invoke('save-app-data', key, data),
-  loadAppData: (key) => ipcRenderer.invoke('load-app-data', key),
-  deleteAppData: (key) => ipcRenderer.invoke('delete-app-data', key),
-  listAppData: (prefix) => ipcRenderer.invoke('list-app-data', prefix),
+  // ── Narrow persistence capabilities ──
+  saveNote: (noteId, data) => ipcRenderer.invoke('save-app-data', `note_${noteId}`, data),
+  loadNote: (noteId) => ipcRenderer.invoke('load-app-data', `note_${noteId}`),
+  reportCrash: (data) => ipcRenderer.invoke('save-app-data', '__crash_log', data),
+  getNotesState: () => ipcRenderer.invoke('get-notes-state'),
+  getNoteSummaries: () => ipcRenderer.invoke('get-note-summaries'),
   restoreNotes: (noteIds, dockedIds) => ipcRenderer.send('restore-notes', noteIds, dockedIds),
+
+  // Event data is owned by the main process and mutated by ID so concurrent
+  // renderer windows cannot overwrite one another with stale arrays.
+  getEventsState: () => ipcRenderer.invoke('get-events-state'),
+  mutateEvent: (request) => ipcRenderer.invoke('mutate-event', request),
 
   // ── Tags ──
   getTags: () => ipcRenderer.invoke('get-tags'),
@@ -83,9 +106,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getEventsByTag: (tagId) => ipcRenderer.invoke('get-events-by-tag', tagId),
 
   // ── Dock management ──
-  dockNote: (noteId, noteSnapshot) => ipcRenderer.send('dock-note', noteId, noteSnapshot),
-  undockNote: (noteId, noteSnapshot) => ipcRenderer.send('undock-note', noteId, noteSnapshot),
-  undockNoteAt: (noteId, x, y, noteSnapshot) => ipcRenderer.send('undock-note-at', noteId, x, y, noteSnapshot),
+  dockNote: (noteId, noteSnapshot) => ipcRenderer.invoke('dock-note', noteId, noteSnapshot),
+  undockNote: (noteId, noteSnapshot) => ipcRenderer.invoke('undock-note', noteId, noteSnapshot),
+  undockNoteAt: (noteId, x, y, noteSnapshot) => ipcRenderer.invoke('undock-note-at', noteId, x, y, noteSnapshot),
   beginNoteWindowDrag: (noteId, noteSnapshot, screenX, screenY) => ipcRenderer.send('begin-note-window-drag', noteId, noteSnapshot, screenX, screenY),
   moveNoteWindowDrag: (screenX, screenY) => ipcRenderer.send('move-note-window-drag', screenX, screenY),
   endNoteWindowDrag: (screenX, screenY, moved) => ipcRenderer.send('end-note-window-drag', screenX, screenY, moved),
@@ -118,7 +141,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Notes sync (dock/undock) ──
   onNotesChanged: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('notes-changed', handler);
     return () => ipcRenderer.removeListener('notes-changed', handler);
   },

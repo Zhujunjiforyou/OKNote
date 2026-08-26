@@ -1,14 +1,17 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
-import type { CalendarEvent } from "@/types/calendar.types"
+import type { CalendarEvent, EventRecurrence } from "@/types/calendar.types"
 import type { Note } from "@/types/notes.types"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+let fallbackIdSequence = 0
 export function generateId(): string {
-  return crypto.randomUUID()
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  fallbackIdSequence += 1
+  return `generated_${Date.now()}_${fallbackIdSequence}`
 }
 
 export const DEFAULT_NOTE_COLOR = '#2563EB'
@@ -36,21 +39,48 @@ export function normalizeHexColor(value: unknown, fallback = DEFAULT_NOTE_COLOR)
 
 export function hexToLuminance(hex: string): number {
   const safeHex = normalizeHexColor(hex)
-  const r = parseInt(safeHex.slice(1, 3), 16)
-  const g = parseInt(safeHex.slice(3, 5), 16)
-  const b = parseInt(safeHex.slice(5, 7), 16)
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  const toLinear = (channel: number) => {
+    const value = channel / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  }
+  const r = toLinear(parseInt(safeHex.slice(1, 3), 16))
+  const g = toLinear(parseInt(safeHex.slice(3, 5), 16))
+  const b = toLinear(parseInt(safeHex.slice(5, 7), 16))
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+export function contrastRatio(first: string, second: string): number {
+  const firstLuminance = hexToLuminance(first)
+  const secondLuminance = hexToLuminance(second)
+  const lighter = Math.max(firstLuminance, secondLuminance)
+  const darker = Math.min(firstLuminance, secondLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+export function ensureReadableTextColor(background: string, configured: string, minimumRatio = 4.5): string {
+  const safeBackground = normalizeHexColor(background, '#1C1C1E')
+  const safeConfigured = normalizeHexColor(configured, '#F5F5F7')
+  if (contrastRatio(safeBackground, safeConfigured) >= minimumRatio) return safeConfigured
+  return contrastRatio(safeBackground, '#111827') >= contrastRatio(safeBackground, '#f8fafc')
+    ? '#111827'
+    : '#f8fafc'
 }
 
 export function isLightColor(hex: string): boolean {
-  return hexToLuminance(hex) > 0.5
+  // At ~0.179, black and white have equal WCAG contrast against the surface.
+  return hexToLuminance(hex) > 0.179
 }
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/
 const DAY_MS = 24 * 60 * 60 * 1000
 
-function isDateKey(value: unknown): value is string {
-  return typeof value === 'string' && DATE_KEY_RE.test(value)
+export function isDateKey(value: unknown): value is string {
+  if (typeof value !== 'string' || !DATE_KEY_RE.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return false
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
 }
 
 function pad2(value: number): string {
@@ -63,7 +93,10 @@ export function getLocalDateKey(date = new Date()): string {
 
 function dateKeyToUtcDay(dateStr: string): number {
   const [year, month, day] = dateStr.split('-').map(Number)
-  return Math.floor(Date.UTC(year, month - 1, day) / DAY_MS)
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
+  return Math.floor(date.getTime() / DAY_MS)
 }
 
 function formatUtcDateKey(date: Date): string {
@@ -72,7 +105,9 @@ function formatUtcDateKey(date: Date): string {
 
 export function addDaysToDateKey(dateStr: string, days: number): string {
   const [year, month, day] = dateStr.split('-').map(Number)
-  const date = new Date(Date.UTC(year, month - 1, day))
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
   date.setUTCDate(date.getUTCDate() + days)
   return formatUtcDateKey(date)
 }
@@ -83,7 +118,10 @@ export function diffDateKeys(startDate: string, endDate: string): number {
 
 function getDateKeyWeekday(dateStr: string): number {
   const [year, month, day] = dateStr.split('-').map(Number)
-  return new Date(year, month - 1, day).getDay()
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
+  return date.getUTCDay()
 }
 
 function startOfWeekDateKey(dateStr: string): string {
@@ -145,8 +183,237 @@ function recurrenceMatchesDate(event: CalendarEvent, dateStr: string): boolean {
   return sameMonthDay && years >= 0 && years % interval === 0
 }
 
+function dateKeyFromMonthIndex(monthIndex: number, day: number): string | null {
+  const year = Math.floor(monthIndex / 12)
+  const month = monthIndex % 12
+  const candidate = `${year}-${pad2(month + 1)}-${pad2(day)}`
+  return isDateKey(candidate) ? candidate : null
+}
+
+function recurringStartNear(event: CalendarEvent, pivotDate: string, direction: 'next' | 'previous'): string | null {
+  const recurrence = event.recurrence
+  if (!recurrence || !isDateKey(event.startDate) || !isDateKey(pivotDate)) return null
+  const interval = Math.max(1, Math.floor(recurrence.interval || 1))
+  const accepts = (candidate: string) => isDateKey(candidate)
+    && candidate >= event.startDate
+    && (!recurrence.until || candidate <= recurrence.until)
+    && (direction === 'next' ? candidate >= pivotDate : candidate <= pivotDate)
+    && recurrenceMatchesDate(event, candidate)
+
+  if (recurrence.freq === 'daily') {
+    // When the series has already ended, search backwards from its upper
+    // bound instead of testing one post-`until` candidate and giving up.
+    const candidatePivot = direction === 'previous' && recurrence.until && pivotDate > recurrence.until
+      ? recurrence.until
+      : pivotDate
+    const difference = diffDateKeys(event.startDate, candidatePivot)
+    if (direction === 'previous' && difference < 0) return null
+    const occurrenceIndex = direction === 'next'
+      ? Math.max(0, Math.ceil(difference / interval))
+      : Math.floor(difference / interval)
+    const candidate = addDaysToDateKey(event.startDate, occurrenceIndex * interval)
+    return accepts(candidate) ? candidate : null
+  }
+
+  if (recurrence.freq === 'weekly') {
+    const seriesWeek = startOfWeekDateKey(event.startDate)
+    const pivotWeek = startOfWeekDateKey(pivotDate)
+    const weeksFromStart = Math.floor(diffDateKeys(seriesWeek, pivotWeek) / 7)
+    let activeWeek = Math.max(0, Math.floor(weeksFromStart / interval) * interval)
+    if (direction === 'previous' && weeksFromStart < 0) return null
+    const weekdays = [...new Set(recurrence.byWeekday?.length
+      ? recurrence.byWeekday
+      : [getDateKeyWeekday(event.startDate)])]
+      .map((day) => day === 0 ? 6 : day - 1)
+      .sort((a, b) => direction === 'next' ? a - b : b - a)
+    for (let attempts = 0; attempts < 11000; attempts += 1) {
+      if (activeWeek < 0) return null
+      const activeWeekStart = addDaysToDateKey(seriesWeek, activeWeek * 7)
+      for (const weekdayOffset of weekdays) {
+        const candidate = addDaysToDateKey(activeWeekStart, weekdayOffset)
+        if (accepts(candidate)) return candidate
+      }
+      activeWeek += direction === 'next' ? interval : -interval
+      if (Number(activeWeekStart.slice(0, 4)) >= 2100 && direction === 'next') return null
+    }
+    return null
+  }
+
+  if (recurrence.freq === 'monthly') {
+    const [startYear, startMonth] = event.startDate.split('-').map(Number)
+    const [pivotYear, pivotMonth] = pivotDate.split('-').map(Number)
+    const seriesMonth = startYear * 12 + startMonth - 1
+    const pivotMonthIndex = pivotYear * 12 + pivotMonth - 1
+    const monthsFromStart = pivotMonthIndex - seriesMonth
+    if (direction === 'previous' && monthsFromStart < 0) return null
+    let activeMonth = Math.max(0, Math.floor(monthsFromStart / interval) * interval)
+    const days = [...new Set(recurrence.byMonthDay?.length
+      ? recurrence.byMonthDay
+      : [Number(event.startDate.slice(8, 10))])]
+      .sort((a, b) => direction === 'next' ? a - b : b - a)
+    for (let attempts = 0; attempts < 2500; attempts += 1) {
+      if (activeMonth < 0) return null
+      const monthIndex = seriesMonth + activeMonth
+      if (Math.floor(monthIndex / 12) > 2100 || Math.floor(monthIndex / 12) < 1900) return null
+      for (const day of days) {
+        const candidate = dateKeyFromMonthIndex(monthIndex, day)
+        if (candidate && accepts(candidate)) return candidate
+      }
+      activeMonth += direction === 'next' ? interval : -interval
+    }
+    return null
+  }
+
+  const startYear = Number(event.startDate.slice(0, 4))
+  const pivotYear = Number(pivotDate.slice(0, 4))
+  const yearsFromStart = pivotYear - startYear
+  if (direction === 'previous' && yearsFromStart < 0) return null
+  let activeYear = Math.max(0, Math.floor(yearsFromStart / interval) * interval)
+  const monthDay = event.startDate.slice(5)
+  for (let attempts = 0; attempts < 500; attempts += 1) {
+    if (activeYear < 0) return null
+    const candidate = `${startYear + activeYear}-${monthDay}`
+    if (isDateKey(candidate) && accepts(candidate)) return candidate
+    if (startYear + activeYear > 2100 && direction === 'next') return null
+    activeYear += direction === 'next' ? interval : -interval
+  }
+  return null
+}
+
+export function getNearestRecurringOccurrence(event: CalendarEvent, pivotDate: string): CalendarEvent | null {
+  if (!event.recurrence || !isDateKey(pivotDate)) return null
+  const durationDays = getEventDurationDays(event)
+  const previousStart = recurringStartNear(event, pivotDate, 'previous')
+  const nextStart = recurringStartNear(event, pivotDate, 'next')
+  const occurrenceStart = previousStart && addDaysToDateKey(previousStart, durationDays) >= pivotDate
+    ? previousStart
+    : (nextStart || previousStart)
+  if (!occurrenceStart) return null
+  const occurrenceEnd = addDaysToDateKey(occurrenceStart, durationDays)
+  return {
+    ...event,
+    startDate: occurrenceStart,
+    endDate: durationDays > 0 ? occurrenceEnd : undefined,
+    seriesId: event.id,
+    occurrenceDate: occurrenceStart,
+    occurrenceKey: `${event.id}__${occurrenceStart}`,
+  }
+}
+
+export function getEventInstanceRange(event: CalendarEvent, occurrenceDate?: string | null): Pick<CalendarEvent, 'startDate' | 'endDate'> {
+  const startDate = event.recurrence && isDateKey(occurrenceDate) ? occurrenceDate : event.startDate
+  const durationDays = getEventDurationDays(event)
+  return {
+    startDate,
+    ...(durationDays > 0 ? { endDate: addDaysToDateKey(startDate, durationDays) } : {}),
+  }
+}
+
+export function getTagViewEventInstances(events: CalendarEvent[], pivotDate: string): CalendarEvent[] {
+  const visible: CalendarEvent[] = []
+  for (const event of events) {
+    if (!event.recurrence) {
+      visible.push(event)
+      continue
+    }
+    const occurrence = getNearestRecurringOccurrence(event, pivotDate)
+    if (occurrence) visible.push(occurrence)
+  }
+  return visible
+}
+
 export function getEventInstanceKey(event: CalendarEvent): string {
   return event.occurrenceKey || event.id
+}
+
+export function compareCalendarEventStart(a: CalendarEvent, b: CalendarEvent): number {
+  const dateCompare = a.startDate.localeCompare(b.startDate)
+  if (dateCompare !== 0) return dateCompare
+  const aMultiDay = !!(a.endDate && a.endDate !== a.startDate)
+  const bMultiDay = !!(b.endDate && b.endDate !== b.startDate)
+  if (aMultiDay !== bMultiDay) return aMultiDay ? -1 : 1
+  const aTimed = !a.isAllDay && !!a.startTime
+  const bTimed = !b.isAllDay && !!b.startTime
+  if (aTimed !== bTimed) return aTimed ? 1 : -1
+  if (aTimed && bTimed) {
+    const timeCompare = (a.startTime || '').localeCompare(b.startTime || '')
+    if (timeCompare !== 0) return timeCompare
+  }
+  const titleCompare = a.title.localeCompare(b.title, 'zh-CN')
+  return titleCompare !== 0 ? titleCompare : getEventInstanceKey(a).localeCompare(getEventInstanceKey(b))
+}
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+
+export function normalizeCalendarEvent(raw: unknown): CalendarEvent | null {
+  if (!isRecord(raw) || !isDateKey(raw.startDate)) return null
+  const id = typeof raw.id === 'string' && raw.id.trim() && raw.id.length <= 160
+    ? raw.id
+    : generateId()
+  const title = typeof raw.title === 'string' && raw.title.trim()
+    ? raw.title.trim().slice(0, 200)
+    : '未命名事件'
+  const startDate = raw.startDate
+  const endDate = isDateKey(raw.endDate) && raw.endDate >= startDate ? raw.endDate : undefined
+  const isAllDay = raw.isAllDay === true
+  const startTime = !isAllDay && typeof raw.startTime === 'string' && TIME_RE.test(raw.startTime) ? raw.startTime : undefined
+  const endTime = !isAllDay && typeof raw.endTime === 'string' && TIME_RE.test(raw.endTime) ? raw.endTime : undefined
+  const recurrenceSource = isRecord(raw.recurrence) ? raw.recurrence : undefined
+  const recurrenceFreq = recurrenceSource?.freq
+  const recurrence: EventRecurrence | undefined = recurrenceSource
+    && (recurrenceFreq === 'daily' || recurrenceFreq === 'weekly' || recurrenceFreq === 'monthly' || recurrenceFreq === 'yearly')
+    ? {
+        freq: recurrenceFreq,
+        interval: clamp(Math.floor(Number(recurrenceSource.interval) || 1), 1, 99),
+        ...(recurrenceFreq === 'weekly'
+          ? { byWeekday: [...new Set((Array.isArray(recurrenceSource.byWeekday) ? recurrenceSource.byWeekday : [])
+              .map(Number)
+              .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))] }
+          : {}),
+        ...(recurrenceFreq === 'monthly'
+          ? { byMonthDay: [...new Set((Array.isArray(recurrenceSource.byMonthDay) ? recurrenceSource.byMonthDay : [])
+              .map(Number)
+              .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31))] }
+          : {}),
+        ...(isDateKey(recurrenceSource.until) && recurrenceSource.until >= startDate ? { until: recurrenceSource.until } : {}),
+      }
+    : undefined
+  const reminderSource = isRecord(raw.reminder) ? raw.reminder : null
+  const reminder = reminderSource?.enabled === true && (isAllDay || !!startTime)
+    ? {
+        enabled: true,
+        minutesBefore: clamp(Math.floor(Number(reminderSource.minutesBefore) || 0), 0, 365 * 24 * 60),
+        playSound: reminderSource.playSound === true,
+      }
+    : undefined
+  const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString()
+
+  return {
+    id,
+    title,
+    description: typeof raw.description === 'string' ? raw.description.slice(0, 2000) : '',
+    startDate,
+    ...(endDate && endDate !== startDate ? { endDate } : {}),
+    ...(startTime ? { startTime } : {}),
+    ...(endTime ? { endTime } : {}),
+    isAllDay,
+    color: normalizeHexColor(raw.color),
+    ...(typeof raw.tagId === 'string' && raw.tagId.length <= 160 ? { tagId: raw.tagId } : {}),
+    ...(recurrence ? { recurrence } : {}),
+    ...(reminder ? { reminder } : {}),
+    createdAt,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt,
+  }
+}
+
+export function normalizeCalendarEvents(raw: unknown): CalendarEvent[] {
+  if (!Array.isArray(raw)) return []
+  const byId = new Map<string, CalendarEvent>()
+  for (const event of raw.map(normalizeCalendarEvent).filter((item): item is CalendarEvent => !!item)) {
+    const existing = byId.get(event.id)
+    if (!existing || event.updatedAt >= existing.updatedAt) byId.set(event.id, event)
+  }
+  return [...byId.values()]
 }
 
 export function expandEventsInRange(events: CalendarEvent[], rangeStart: string, rangeEnd: string): CalendarEvent[] {
@@ -207,6 +474,39 @@ export function buildEventsByDate(events: CalendarEvent[], rangeStart: string, r
   return map
 }
 
+export interface CalendarTodoPreview {
+  id: string
+  noteId: string
+  content: string
+  sortOrder: number
+}
+
+export function buildDailyTodoItemsByDate(notes: Note[], rangeStart: string, rangeEnd: string): Map<string, CalendarTodoPreview[]> {
+  const map = new Map<string, CalendarTodoPreview[]>()
+  if (!isDateKey(rangeStart) || !isDateKey(rangeEnd) || rangeEnd < rangeStart) return map
+
+  for (const note of notes) {
+    if (note.noteType !== 'daily') continue
+    for (const item of note.items || []) {
+      if (item.isCompleted || !isDateKey(item.todoDate)) continue
+      if (item.todoDate < rangeStart || item.todoDate > rangeEnd) continue
+      const items = map.get(item.todoDate) || []
+      items.push({
+        id: item.id,
+        noteId: note.id,
+        content: item.content.trim() || '未命名待办',
+        sortOrder: Number.isFinite(item.sortOrder) ? item.sortOrder : items.length,
+      })
+      map.set(item.todoDate, items)
+    }
+  }
+
+  for (const items of map.values()) {
+    items.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
+  }
+  return map
+}
+
 export function filterEventsByDate(events: CalendarEvent[], dateStr: string): CalendarEvent[] {
   return buildEventsByDate(events, dateStr, dateStr).get(dateStr) || []
 }
@@ -225,38 +525,46 @@ export function isSameDay(date1: Date, date2: Date): boolean {
  */
 export function normalizeNote(raw: unknown): Note {
   const n = (isRecord(raw) ? raw : {}) as Record<string, unknown>
-  const id = typeof n.id === 'string' && n.id.trim() ? n.id : crypto.randomUUID()
+  const id = typeof n.id === 'string' && n.id.trim() ? n.id : generateId()
   const ts = typeof n.createdAt === 'string' ? n.createdAt : new Date().toISOString()
   const noteType: Note['noteType'] =
     n.noteType === 'echo' || n.noteType === 'view' || n.noteType === 'daily'
       ? n.noteType
       : 'independent'
   const rawItems = Array.isArray(n.items) ? n.items : []
+  const seenItemIds = new Set<string>()
   const safeItems = rawItems
     .filter(isRecord)
-    .map((item) => ({
-      id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
-      noteId: typeof item.noteId === 'string' ? item.noteId : id,
-      content: typeof item.content === 'string' ? item.content : '',
-      isCompleted: !!item.isCompleted,
-      sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : 0,
-      ...(isDateKey(item.todoDate) ? { todoDate: item.todoDate } : {}),
-      ...(typeof item.completedAt === 'string' ? { completedAt: item.completedAt } : {}),
-    }))
+    .map((item) => {
+      const candidate = typeof item.id === 'string' && item.id.trim() && item.id.length <= 200 ? item.id : ''
+      const itemId = candidate && !seenItemIds.has(candidate) ? candidate : generateId()
+      seenItemIds.add(itemId)
+      return {
+        id: itemId,
+        noteId: id,
+        content: typeof item.content === 'string' ? item.content : '',
+        isCompleted: !!item.isCompleted,
+        sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : 0,
+        ...(isDateKey(item.todoDate) ? { todoDate: item.todoDate } : {}),
+        ...(typeof item.completedAt === 'string' ? { completedAt: item.completedAt } : {}),
+      }
+    })
   const viewTagIds = Array.isArray(n.viewTagIds)
     ? n.viewTagIds.filter((tagId): tagId is string => typeof tagId === 'string')
     : (typeof n.echoTagId === 'string' ? [n.echoTagId] : undefined)
-  const transparency = typeof n.transparency === 'number' && Number.isFinite(n.transparency)
-    ? clamp(n.transparency, 0.35, 1)
-    : 0.88
-  const fontSize = typeof n.fontSize === 'number' && Number.isFinite(n.fontSize)
-    ? clamp(n.fontSize, 10, 28)
-    : 14
   const today = getLocalDateKey()
+  const preserved = { ...n }
+  delete preserved.revision
+  delete preserved.transparency
+  delete preserved.fontFamily
+  delete preserved.fontSize
+  delete preserved.isPinned
+  delete preserved.isArchived
 
   return {
-    ...(n as Partial<Note>),
+    ...(preserved as Partial<Note>),
     id,
+    revision: Number.isInteger(n.revision) && Number(n.revision) >= 0 ? Number(n.revision) : 0,
     noteType,
     items: safeItems as Note['items'],
     ...(typeof n.echoTagId === 'string' ? { echoTagId: n.echoTagId } : { echoTagId: undefined }),
@@ -270,18 +578,17 @@ export function normalizeNote(raw: unknown): Note {
             lastResetDate: isDateKey((n.dailyTodo as Record<string, unknown> | undefined)?.lastResetDate)
               ? (n.dailyTodo as Record<string, string>).lastResetDate
               : today,
+            completedEventOccurrences: Array.isArray((n.dailyTodo as Record<string, unknown> | undefined)?.completedEventOccurrences)
+              ? [...new Set(((n.dailyTodo as Record<string, unknown>).completedEventOccurrences as unknown[])
+                  .filter((key): key is string => typeof key === 'string' && key.length <= 320))].slice(-20000)
+              : [],
           },
         }
       : { dailyTodo: undefined }),
     color: normalizeHexColor(n.color),
-    transparency,
-    fontFamily: typeof n.fontFamily === 'string' ? n.fontFamily : 'Microsoft YaHei',
-    fontSize,
     isDocked: typeof n.isDocked === 'boolean' ? n.isDocked : noteType === 'view',
     dockedOrder: typeof n.dockedOrder === 'number' ? n.dockedOrder : undefined,
     isHidden: n.isHidden === true,
-    isPinned: !!n.isPinned,
-    isArchived: !!n.isArchived,
     title: typeof n.title === 'string' && n.title.trim() ? n.title : noteType === 'daily' ? '每日待办' : '新便签',
     createdAt: ts,
     updatedAt: typeof n.updatedAt === 'string' ? n.updatedAt : ts,
