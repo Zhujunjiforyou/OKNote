@@ -4,6 +4,7 @@ import { useNotesStore } from '@/stores/notes.store'
 import { Check, Trash2 } from 'lucide-react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useUndoStore } from '@/stores/undo.store'
+import { isImeComposing } from '@/lib/utils'
 
 interface TodoItemProps {
   item: NoteItemType
@@ -81,6 +82,7 @@ export function TodoItem({ item, note, onDraftChange }: TodoItemProps) {
           onChange={(e) => setDraft(e.target.value)}
           onBlur={saveEdit}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return
             if (e.key === 'Enter') saveEdit()
             if (e.key === 'Escape') setEditing(false)
           }}

@@ -7,7 +7,7 @@ import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
 import { Plus, MoreHorizontal } from 'lucide-react'
-import { NOTE_COLOR_PALETTE, isLightColor, normalizeHexColor } from '@/lib/utils'
+import { NOTE_COLOR_PALETTE, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeHexColor } from '@/lib/utils'
 import type { EventTag } from '@/types/tag.types'
 import type { PerWindowSettings } from '@/types/electron'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -178,9 +178,10 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
       const menuHeight = isEcho ? 252 : 162
       const maxLeft = Math.max(8, window.innerWidth - menuWidth - 8)
       const left = Math.max(8, Math.min(maxLeft, rect.right - menuWidth))
-      const top = rect.top > menuHeight + 8
+      const preferredTop = rect.top > menuHeight + 8
         ? rect.top - menuHeight - 6
         : Math.min(window.innerHeight - menuHeight - 8, rect.bottom + 4)
+      const top = Math.max(8, preferredTop)
       setMenuPos({ top, left })
     }
     setShowMenu(true)
@@ -207,6 +208,13 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
       event.preventDefault()
       setShowMenu(false)
       window.requestAnimationFrame(() => menuBtnRef.current?.focus())
+      return
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const backwards = event.shiftKey
+      setShowMenu(false)
+      window.setTimeout(() => focusAdjacentInteractiveElement(menuBtnRef.current, backwards), 0)
       return
     }
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
@@ -363,7 +371,7 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
               maxLength={200}
               onChange={(e) => setTitleDraft(e.target.value)}
               onBlur={saveTitle}
-              onKeyDown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
+              onKeyDown={(e) => { if (isImeComposing(e)) return; if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
               className="flex-1 bg-white/10 rounded px-1 py-0 text-[0.78em] outline-none min-w-0"
               aria-label="编辑挂载便签标题"
               data-no-card-drag
@@ -372,9 +380,14 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
             <span
               className="text-[0.78em] font-medium truncate cursor-pointer"
               onClick={startEditTitle}
-              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === 'F2') { event.preventDefault(); startEditTitle() } }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') {
+                  event.preventDefault()
+                  startEditTitle()
+                }
+              }}
               data-no-card-drag
-              title="点击、Enter 或 F2 编辑标题"
+              title="点击、空格、Enter 或 F2 编辑标题"
               role="button"
               tabIndex={0}
             >
@@ -481,7 +494,7 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
                   value={newTodo}
                   maxLength={2000}
                   onChange={(e) => setNewTodo(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+                  onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleAddTodo() }}
                   onBlur={handleAddTodo}
                   placeholder="添加待办..."
                   className="flex-1 docked-note-input rounded-md px-2 py-1.5 text-[0.7em] outline-none placeholder:opacity-70"

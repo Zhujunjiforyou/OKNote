@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Bell, Repeat, Trash2, X } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { EVENT_COLOR_PALETTE, generateId } from '@/lib/utils'
+import { EVENT_COLOR_PALETTE, generateId, isImeComposing } from '@/lib/utils'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
@@ -339,7 +339,7 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
         transition={{ duration: 0.15 }}
         onClick={(e) => e.stopPropagation()}
         className="w-[420px] max-h-[calc(100vh-12px)] max-w-[calc(100vw-12px)] overflow-auto"
-        onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && title.trim()) { e.preventDefault(); void handleSave() } }}
+        onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter' && (e.ctrlKey || e.metaKey) && title.trim()) { e.preventDefault(); void handleSave() } }}
         role="dialog"
         aria-modal={confirmAction === null ? 'true' : undefined}
         aria-hidden={confirmAction !== null ? 'true' : undefined}
@@ -384,7 +384,13 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
                 placeholder="事件标题"
                 className="w-full bg-transparent text-sm border-b border-border pb-2 outline-none focus:border-primary transition-colors placeholder:text-muted-foreground"
                 autoFocus
-                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void handleSave() } }}
+                onKeyDown={(event) => {
+                  if (!isImeComposing(event) && event.key === 'Enter') {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    void handleSave()
+                  }
+                }}
               />
 
               {/* Multi-day toggle */}

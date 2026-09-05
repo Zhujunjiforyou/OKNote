@@ -5,12 +5,14 @@ import type { Note } from '../src/types/notes.types'
 import {
   addDaysToDateKey,
   buildDailyTodoItemsByDate,
+  buildEventsByDate,
   compareCalendarEventStart,
   expandEventsInRange,
   getEventInstanceRange,
   getNearestRecurringOccurrence,
   getTagViewEventInstances,
   hexToLuminance,
+  isImeComposing,
   isDateKey,
   normalizeCalendarEvents,
   normalizeNote,
@@ -144,9 +146,34 @@ describe('date and holiday integrity', () => {
     expect(isDateKey('2101-01-01')).toBe(false)
     expect(addDaysToDateKey('1900-01-01', 1)).toBe('1900-01-02')
   })
+
+  it('keeps 2100 year-end events when the visible grid spills into 2101', () => {
+    const yearEnd = event({ id: 'year_end', startDate: '2100-12-31', isAllDay: true })
+    const recurring = event({ id: 'year_end_recurring', startDate: '2099-12-31', isAllDay: true, recurrence: { freq: 'yearly', interval: 1 } })
+    const byDate = buildEventsByDate([yearEnd, recurring], '2100-12-27', '2101-01-02')
+
+    expect(byDate.get('2100-12-31')?.map((item) => item.id).sort())
+      .toEqual(['year_end', 'year_end_recurring'])
+  })
 })
 
 describe('normalization and contrast helpers', () => {
+  it('recognizes browser and React IME composition signals', () => {
+    expect(isImeComposing({ isComposing: true })).toBe(true)
+    expect(isImeComposing({ nativeEvent: { isComposing: true } })).toBe(true)
+    expect(isImeComposing({ keyCode: 229 })).toBe(true)
+    expect(isImeComposing({ nativeEvent: { keyCode: 229 } })).toBe(true)
+    expect(isImeComposing({ keyCode: 13 })).toBe(false)
+  })
+
+  it('uses the same safe identifier rule as the Electron mutation boundary', () => {
+    expect(normalizeCalendarEvents([
+      event({ id: 'safe_event-1' }),
+      event({ id: 'bad event' }),
+      event({ id: 'bad|event' }),
+    ]).map((item) => item.id)).toEqual(['safe_event-1'])
+  })
+
   it('uses WCAG relative luminance endpoints', () => {
     expect(hexToLuminance('#000000')).toBe(0)
     expect(hexToLuminance('#ffffff')).toBe(1)

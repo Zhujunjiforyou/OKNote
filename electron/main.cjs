@@ -13,15 +13,35 @@ const {
   writeJsonAtomic,
 } = require('./json-store.cjs');
 const { collectDueReminders, eventStartMillis } = require('./reminder-reliability.cjs');
+const {
+  expandReminderEventsForDueWindow,
+  normalizeReminderEvents,
+  normalizeReminderHistory,
+} = require('./reminder-data.cjs');
 const { hasRevisionConflict } = require('./event-concurrency.cjs');
+const { eventsByTag } = require('./event-query.cjs');
+const { sanitizeTagPayload, sanitizeEventPayload } = require('./event-payload.cjs');
+const { isDateKey, isSafeIdentifier, safeHexColor } = require('./data-rules.cjs');
+const { clampFontSetting, safeFontFamily, normalizeWindowSettings, sanitizeSettingChange } = require('./settings-rules.cjs');
+const { listLegacyJsonFiles } = require('./legacy-json.cjs');
+const { migrateUserData: copyLegacyUserData } = require('./user-data-migration.cjs');
 const { commitNoteSnapshot, getNoteRevision } = require('./note-persistence.cjs');
 const { calendarMinimumForWorkArea, noteMinimumForWorkArea } = require('./window-constraints.cjs');
+const {
+  canonicalNoteFileNames,
+  canonicalTrashRecordNames,
+  dataDocumentValidator,
+  getReadOnlyDataTargets,
+  isValidTagsDocument,
+  isValidTrashRecord,
+} = require('./data-validation.cjs');
 
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
-const DEV_PORT = parseInt(process.env.VITE_PORT || '5199', 10);
+const DEV_PORT = parseInt(process.env.VITE_PORT || '5173', 10);
+const isIsolatedTestInstance = process.env.OKNOTE_SMOKE_TEST === '1' || process.env.OKNOTE_E2E_TEST === '1';
 // Acquire the lock before inspecting or migrating user data. A second instance
 // must never participate in migration, even briefly, before it exits.
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const hasSingleInstanceLock = isIsolatedTestInstance || app.requestSingleInstanceLock();
 const DEFAULT_USER_DATA_DIR = app.getPath('userData');
 const INSTALL_USER_DATA_DIR = app.isPackaged ? path.join(path.dirname(process.execPath), 'user-data') : null;
 const startupReliabilityIssues = [];
@@ -30,10 +50,6 @@ function queueStartupReliabilityIssue(title, message) {
   if (!startupReliabilityIssues.some((issue) => issue.title === title && issue.message === message)) {
     startupReliabilityIssues.push({ title, message });
   }
-}
-
-function samePath(a, b) {
-  return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 }
 
 function ensureWritableDir(dir) {
@@ -50,38 +66,18 @@ function ensureWritableDir(dir) {
   }
 }
 
-function copyMissingRecursive(source, destination) {
-  if (!fs.existsSync(source)) return;
-  const stat = fs.statSync(source);
-  if (stat.isDirectory()) {
-    fs.mkdirSync(destination, { recursive: true });
-    for (const name of fs.readdirSync(source)) {
-      copyMissingRecursive(path.join(source, name), path.join(destination, name));
-    }
-    return;
-  }
-  if (fs.existsSync(destination)) return;
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
-}
-
 function migrateUserData(fromDir, toDir) {
-  if (!fromDir || !toDir || samePath(fromDir, toDir) || !fs.existsSync(fromDir)) return;
-  for (const name of ['settings.json', 'window-bounds.json', 'data', 'Local Storage']) {
-    try {
-      copyMissingRecursive(path.join(fromDir, name), path.join(toDir, name));
-    } catch (error) {
-      console.error('migrateUserData failed:', name, error.message);
-      queueStartupReliabilityIssue('旧数据未完全复制', `“${name}”未能复制到当前数据目录；源数据仍保留在原位置。`);
-    }
-  }
+  copyLegacyUserData(fromDir, toDir, (name, error) => {
+    console.error('migrateUserData failed:', name, error.message);
+    queueStartupReliabilityIssue('旧数据未完全复制', `“${name}”未能复制到当前数据目录；源数据仍保留在原位置。`);
+  }, fromDir === INSTALL_USER_DATA_DIR ? 'installation' : 'default-profile');
 }
 
 function resolveUserDataDir() {
   const envDir = process.env.OKNOTE_DATA_DIR ? path.resolve(process.env.OKNOTE_DATA_DIR) : null;
 
   if (envDir && ensureWritableDir(envDir)) {
-    if(process.env.OKNOTE_SMOKE_TEST!=='1'){
+    if(!isIsolatedTestInstance){
       migrateUserData(DEFAULT_USER_DATA_DIR, envDir);
       migrateUserData(INSTALL_USER_DATA_DIR, envDir);
     }
@@ -265,14 +261,42 @@ const DATA_DIR = path.join(USER_DATA_DIR, 'data');
 const NOTE_TRASH_DIR = path.join(DATA_DIR, '.trash');
 const settingsPath = path.join(USER_DATA_DIR, 'settings.json');
 let windowBounds = {};
+let windowBoundsReadOnly = false;
 
 function loadWindowBounds() {
   try {
-    const raw = readJsonWithRecovery(BOUNDS_FILE, 'window bounds');
-    windowBounds = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  } catch(e) { console.error('loadWindowBounds failed:', e.message); windowBounds = {}; }
+    const hadStoredBounds = [BOUNDS_FILE, `${BOUNDS_FILE}.bak`].some((candidate) => fs.existsSync(candidate));
+    let recoveryWriteError = null;
+    const raw = readJsonWithRecovery(BOUNDS_FILE, 'window bounds', {
+      validate: dataDocumentValidator('window-bounds.json'),
+      onRecovery: (details) => {
+        recoveryWriteError = details.writeError || null;
+        if (reportLegacyJsonConversion('window-bounds.json', details)) return;
+        queueStartupReliabilityIssue(
+          recoveryWriteError ? '窗口布局已从备份载入（只读）' : '窗口布局已从备份恢复',
+          recoveryWriteError
+            ? '布局备份有效且已载入，但主布局文件写回失败；本次会话已暂停布局写入，备份原件仍保留。请检查磁盘空间、目录权限或文件占用。'
+            : details.reason === 'missing-primary'
+              ? '主布局文件缺失，应用已验证并恢复上一版本备份；请确认窗口位置与大小。'
+              : '主布局文件内容无效，应用已验证并恢复上一版本备份；请确认窗口位置与大小。',
+        );
+      },
+    });
+    windowBoundsReadOnly = Boolean(recoveryWriteError);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) windowBounds = raw;
+    else {
+      windowBounds = {};
+      if (hadStoredBounds) queueStartupReliabilityIssue('窗口布局已恢复默认', '布局文件内容无效，应用已使用安全默认位置；原文件仍保留在用户数据目录。');
+    }
+  } catch(e) {
+    console.error('loadWindowBounds failed:', e.message);
+    windowBounds = {};
+    windowBoundsReadOnly = true;
+    queueStartupReliabilityIssue('窗口布局已恢复默认', '布局主文件与备份均无法安全读取，应用已使用安全默认位置并暂停布局写入；原文件仍保留在用户数据目录。');
+  }
 }
 function saveWindowBounds() {
+  if (windowBoundsReadOnly) return false;
   // Merge live bounds into the last persisted snapshot. Closed, hidden and
   // docked windows keep their records until the note itself is deleted.
   const b = { ...windowBounds };
@@ -323,8 +347,6 @@ const appearancePresets = {
   dark: { backgroundColor: '#1C1C1E', textColor: '#F5F5F7' },
   light: { backgroundColor: '#F2F2F7', textColor: '#1D1D1F' },
 };
-const FONT_SIZE_MIN = 10;
-const FONT_SIZE_MAX = 60;
 let appSettings = {
   themeMode: 'dark',
   autoLaunch: false,
@@ -335,6 +357,7 @@ let appSettings = {
   calendar: { ...perWindowDefaults, edgeAutoHide: true, showDockArea: true },
   notes: { ...perWindowDefaults },
 };
+let settingsReadOnly = false;
 
 function applyThemePreset(mode) {
   const preset = appearancePresets[mode] || appearancePresets.dark;
@@ -342,38 +365,26 @@ function applyThemePreset(mode) {
   appSettings.calendar = { ...appSettings.calendar, ...preset };
 }
 
-function clampFontSetting(value) {
-  const numeric = Number(value);
-  return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Number.isFinite(numeric) ? numeric : 14));
-}
-
-function safeFontFamily(value, fallback) {
-  return typeof value === 'string' && value.trim() && value.length <= 120 ? value.trim() : fallback;
-}
-
-function safeOpacity(value, fallback = 0.88) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.min(1, Math.max(0.1, numeric)) : fallback;
-}
-
-function normalizeWindowSettings(raw, fallback, includeEdgeAutoHide = false) {
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  return {
-    fontFamily: safeFontFamily(source.fontFamily, fallback.fontFamily),
-    fontSize: clampFontSetting(source.fontSize),
-    backgroundColor: safeHexColor(source.backgroundColor, fallback.backgroundColor),
-    backgroundOpacity: safeOpacity(source.backgroundOpacity, fallback.backgroundOpacity),
-    textColor: safeHexColor(source.textColor, fallback.textColor),
-    ...(includeEdgeAutoHide ? {
-      edgeAutoHide: source.edgeAutoHide !== false,
-      showDockArea: source.showDockArea !== false,
-    } : {}),
-  };
-}
-
 function loadSettings() {
   try {
-    const raw = readJsonWithRecovery(settingsPath, 'settings');
+    const hadStoredSettings = [settingsPath, `${settingsPath}.bak`].some((candidate) => fs.existsSync(candidate));
+    let recoveryWriteError = null;
+    const raw = readJsonWithRecovery(settingsPath, 'settings', {
+      validate: dataDocumentValidator('settings.json'),
+      onRecovery: (details) => {
+        recoveryWriteError = details.writeError || null;
+        if (reportLegacyJsonConversion('settings.json', details)) return;
+        queueStartupReliabilityIssue(
+          recoveryWriteError ? '设置已从备份载入（只读）' : '设置已从备份恢复',
+          recoveryWriteError
+            ? '设置备份有效且已载入，但主设置文件写回失败；本次会话已暂停设置写入，备份原件仍保留。请检查磁盘空间、目录权限或文件占用。'
+            : details.reason === 'missing-primary'
+              ? '主设置文件缺失，应用已验证并恢复上一版本备份；请检查外观与启动选项。'
+              : '主设置文件内容无效，应用已验证并恢复上一版本备份；请检查外观与启动选项。',
+        );
+      },
+    });
+    settingsReadOnly = Boolean(recoveryWriteError);
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       appSettings.themeMode = raw.themeMode === 'light' ? 'light' : 'dark';
       appSettings.autoLaunch = typeof raw.autoLaunch === 'boolean' ? raw.autoLaunch : false;
@@ -383,10 +394,17 @@ function loadSettings() {
       appSettings.globalFontSize = clampFontSetting(raw.globalFontSize);
       appSettings.calendar = normalizeWindowSettings(raw.calendar, perWindowDefaults, true);
       appSettings.notes = normalizeWindowSettings(raw.notes, perWindowDefaults);
+    } else if (hadStoredSettings) {
+      queueStartupReliabilityIssue('设置已恢复默认', '设置文件内容无效，应用已使用安全默认值；原文件仍保留在用户数据目录。');
     }
-  } catch (e) { console.error('loadSettings failed:', e.message); }
+  } catch (e) {
+    console.error('loadSettings failed:', e.message);
+    settingsReadOnly = true;
+    queueStartupReliabilityIssue('设置已恢复默认', '设置主文件与备份均无法安全读取，应用已使用安全默认值并暂停设置写入；原文件仍保留在用户数据目录。');
+  }
 }
 function saveSettings() {
+  if (settingsReadOnly) return false;
   try {
     writeJsonAtomic(settingsPath, appSettings);
     return true;
@@ -444,12 +462,27 @@ function isSafeTransactionFileName(fileName) {
     || (typeof fileName === 'string' && /^\.trash\/trash_[a-zA-Z0-9_-]{1,180}\.json$/.test(fileName));
 }
 
-function readBusinessJsonFile(filePath, label = path.basename(filePath)) {
-  return readJsonWithRecovery(filePath, label);
+
+function readBusinessJsonFile(filePath, label = path.basename(filePath), options = {}) {
+  return readJsonWithRecovery(filePath, label, {
+    ...options,
+    onRecovery: (details) => {
+      if (reportLegacyJsonConversion(path.basename(filePath), details)) return;
+      if (typeof options.onRecovery === 'function') options.onRecovery(details);
+    },
+  });
 }
 
+const appDataLoadErrors = new Map();
 function saveAppData(fileName, data) {
   if (!isSafeDataFileName(fileName)) return false;
+  if (appDataLoadErrors.has(fileName)) {
+    broadcastPersistenceFailure(
+      '数据处于只读保护状态',
+      `“${fileName}”尚未安全完成读取或备份恢复；已阻止写入，以保留主文件与可人工恢复的备份。`,
+    );
+    return false;
+  }
   ensureDataDir();
   const filePath = path.join(DATA_DIR, fileName);
   try {
@@ -461,11 +494,103 @@ function saveAppData(fileName, data) {
   }
 }
 const reportedDataReadFailures = new Set();
+const reportedDataRecoveries = new Set();
+const reportedDataDegradations = new Set();
+function reportLegacyJsonConversion(fileName, details) {
+  if (details.reason !== 'legacy-format') return false;
+  const dataKey = path.relative(DATA_DIR, details.filePath).replace(/\\/g, '/');
+  if (isSafeTransactionFileName(dataKey)) {
+    if (details.writeError) appDataLoadErrors.set(dataKey, details.writeError.message);
+    else appDataLoadErrors.delete(dataKey);
+  }
+  queueStartupReliabilityIssue(
+    details.writeError ? '旧版本数据已载入（只读）' : '旧版本本地数据已兼容',
+    details.writeError
+      ? `“${fileName}”内容已读取，但转换为普通 JSON 失败；原件仍保留，暂不允许覆盖。请检查磁盘空间、权限或文件占用。`
+      : '旧格式数据已自动转换为普通本地 JSON，今后保存不使用加密；转换前原件保留在对应目录的 .legacy-json 文件夹中。',
+  );
+  const target = [winRegistry.calendar, winRegistry.settings, ...Object.values(winRegistry.notes)]
+    .find((win) => win && !win.isDestroyed());
+  if (target) deliverStartupReliabilityIssues(target);
+  return true;
+}
+
+function prepareLegacyLocalData() {
+  // Include unused notes and .bak files, not just records opened by a window.
+  for (const filePath of listLegacyJsonFiles(USER_DATA_DIR)) {
+    const fileName = path.basename(filePath);
+    const dataKey = path.relative(DATA_DIR, filePath).replace(/\\/g, '/');
+    try {
+      readJsonWithRecovery(filePath, fileName, {
+        validate: dataDocumentValidator(fileName),
+        migrateLegacyBackup: true,
+        onRecovery: (details) => {
+          if (details.writeError && isSafeTransactionFileName(dataKey)) appDataLoadErrors.set(dataKey, details.writeError.message);
+          reportDataRecovery(fileName, details);
+        },
+        onDegraded: (details) => {
+          if (isSafeTransactionFileName(dataKey)) appDataLoadErrors.set(dataKey, '旧版本数据包含损坏记录，当前只读');
+          reportDataDegradation(fileName, details);
+        },
+      });
+    } catch (error) {
+      if (isSafeTransactionFileName(dataKey)) appDataLoadErrors.set(dataKey, error.message);
+      reportDataReadFailure(fileName, error);
+    }
+  }
+}
+
+function dataKindForFile(fileName) {
+  if (fileName.startsWith('note_') || fileName === 'notes.json') return '便签';
+  if (fileName === 'tags.json') return '标签';
+  if (fileName === 'events.json') return '事件';
+  if (fileName.startsWith('reminder-')) return '提醒数据';
+  if (fileName === '__crash_log.json') return '故障记录';
+  return '本地数据';
+}
+function reportDataRecovery(fileName, details) {
+  if (reportLegacyJsonConversion(fileName, details)) return;
+  const signature = `${fileName}:${details.reason}:${details.writeError ? 'write-failed' : 'restored'}`;
+  if (reportedDataRecoveries.has(signature)) return;
+  reportedDataRecoveries.add(signature);
+  const dataKind = dataKindForFile(fileName);
+  const reason = details.reason === 'missing-primary' ? '主文件缺失' : '主文件内容无效';
+  queueStartupReliabilityIssue(
+    details.writeError ? `${dataKind}已从备份载入（只读）` : `${dataKind}已从备份恢复`,
+    details.writeError
+      ? `“${fileName}”${reason}。上一版本备份有效且已载入，但主文件写回失败；备份原件仍保留，应用已暂停该文件写入。请检查磁盘空间、目录权限或文件占用。`
+      : `“${fileName}”${reason}，应用已验证并恢复上一版本备份；请确认相关内容。`,
+  );
+  const target = [winRegistry.calendar, winRegistry.settings, ...Object.values(winRegistry.notes)]
+    .find((win) => win && !win.isDestroyed());
+  if (target) deliverStartupReliabilityIssues(target);
+}
+function reportDataDegradation(fileName, details) {
+  const signature = `${fileName}:${details.reason}:${details.backupStatus || 'unknown'}`;
+  if (reportedDataDegradations.has(signature)) return;
+  reportedDataDegradations.add(signature);
+  const dataKind = dataKindForFile(fileName);
+  const source = details.reason === 'degraded-backup' ? '备份文件' : '主文件';
+  const backupSummary = details.backupStatus === 'valid'
+    ? '已检测到结构完整的上一版本备份'
+    : details.backupStatus === 'degraded'
+      ? '上一版本备份也包含需隔离的记录'
+      : details.backupStatus === 'invalid'
+        ? '上一版本备份无法通过结构校验'
+        : '未检测到上一版本备份';
+  queueStartupReliabilityIssue(
+    `${dataKind}已降级为只读`,
+    `“${fileName}”${source}同时包含可恢复与损坏记录；应用已隔离坏条目并显示可恢复内容。${backupSummary}。为避免覆盖较完整或可人工恢复的数据，主文件与备份均保持原样，完成修复或合并前不会写入该文件。`,
+  );
+  const target = [winRegistry.calendar, winRegistry.settings, ...Object.values(winRegistry.notes)]
+    .find((win) => win && !win.isDestroyed());
+  if (target) deliverStartupReliabilityIssues(target);
+}
 function reportDataReadFailure(fileName, error) {
   const signature = `${fileName}:${error && error.message ? error.message : String(error)}`;
   if (reportedDataReadFailures.has(signature)) return;
   reportedDataReadFailures.add(signature);
-  const dataKind = fileName.startsWith('note_') ? '便签' : fileName === 'tags.json' ? '标签' : '本地数据';
+  const dataKind = dataKindForFile(fileName);
   const title = `${dataKind}文件无法读取`;
   const message = `“${fileName}”及其上一版本备份均无法读取。原文件已保留，应用没有用空数据覆盖；请保留数据目录并从可用备份恢复。`;
   queueStartupReliabilityIssue(title, message);
@@ -477,13 +602,34 @@ function loadAppData(fileName, reportFailure = true) {
   if (!isSafeDataFileName(fileName)) return null;
   const filePath = path.join(DATA_DIR, fileName);
   try {
-    const value = readJsonWithRecovery(filePath, fileName);
+    let recoveryWriteError = null;
+    let degradation = null;
+    const value = readJsonWithRecovery(filePath, fileName, {
+      validate: dataDocumentValidator(fileName),
+      onRecovery: (details) => {
+        recoveryWriteError = details.writeError || null;
+        reportDataRecovery(fileName, details);
+      },
+      onDegraded: (details) => {
+        degradation = details;
+        reportDataDegradation(fileName, details);
+      },
+    });
+    if (degradation) {
+      const source = degradation.reason === 'degraded-backup' ? '备份' : '主文件';
+      appDataLoadErrors.set(fileName, `${source}同时包含可恢复与损坏记录，当前数据只读`);
+    } else if (recoveryWriteError) {
+      appDataLoadErrors.set(fileName, `数据已载入，但格式转换或主文件写回失败：${recoveryWriteError.message || String(recoveryWriteError)}`);
+    } else {
+      appDataLoadErrors.delete(fileName);
+    }
     for (const signature of reportedDataReadFailures) {
       if (signature.startsWith(`${fileName}:`)) reportedDataReadFailures.delete(signature);
     }
     return value;
   } catch (e) {
     console.error('loadAppData failed:', fileName, e.message);
+    appDataLoadErrors.set(fileName, e.message);
     if (reportFailure) reportDataReadFailure(fileName, e);
   }
   return null;
@@ -492,11 +638,21 @@ function loadAppData(fileName, reportFailure = true) {
 function applyDataChanges(changes, label = 'data update') {
   if (!Array.isArray(changes) || changes.length === 0) return true;
   const seen = new Set();
-  const snapshots = changes.map((change) => {
+  for (const change of changes) {
     if (!change || !isSafeTransactionFileName(change.fileName) || seen.has(change.fileName)) {
       throw new Error(`Invalid or duplicate data target: ${change && change.fileName}`);
     }
     seen.add(change.fileName);
+  }
+  const readOnlyTargets = getReadOnlyDataTargets(changes, appDataLoadErrors);
+  if (readOnlyTargets.length > 0) {
+    broadcastPersistenceFailure(
+      '事务写入已被只读保护拦截',
+      `以下数据尚未安全恢复：${readOnlyTargets.join('、')}。本次更新未写入任何目标文件，主文件与备份均已保留。`,
+    );
+    throw new Error(`Read-only data target(s): ${readOnlyTargets.join(', ')}`);
+  }
+  const snapshots = changes.map((change) => {
     const target = path.join(DATA_DIR, change.fileName);
     return {
       target,
@@ -538,9 +694,29 @@ function applyDataChanges(changes, label = 'data update') {
   }
 }
 
-const SAFE_IDENTIFIER_RE = /^[a-zA-Z0-9_-]{1,160}$/;
-function isSafeIdentifier(value) {
-  return typeof value === 'string' && SAFE_IDENTIFIER_RE.test(value);
+let tagsLoadError = null;
+function loadTagsState() {
+  const fileName = 'tags.json';
+  const filePath = path.join(DATA_DIR, fileName);
+  const hadStoredTags = [filePath, `${filePath}.bak`].some((candidate) => fs.existsSync(candidate));
+  const raw = loadAppData(fileName, false);
+  if (!hadStoredTags && raw === null) {
+    tagsLoadError = null;
+    return { tags: [] };
+  }
+  if (isValidTagsDocument(raw)) {
+    const protectedReason = appDataLoadErrors.get(fileName);
+    tagsLoadError = protectedReason
+      ? '标签已从有效备份载入，但主文件尚未恢复写入；标签暂时只读，主文件和备份均已保留。'
+      : null;
+    return {
+      tags: raw,
+      ...(tagsLoadError ? { loadError: tagsLoadError, readOnlyDataAvailable: true } : {}),
+    };
+  }
+  tagsLoadError = '标签主文件与可用备份均无法安全读取；标签已切换为只读，原文件不会被空数组覆盖。';
+  reportDataReadFailure(fileName, new Error(tagsLoadError));
+  return { tags: [], loadError: tagsLoadError };
 }
 
 const noteCache = new Map();
@@ -550,7 +726,7 @@ let noteCacheHydrationPromise = null;
 function hydrateNoteCacheSync() {
   ensureDataDir();
   noteCache.clear();
-  const files = fs.readdirSync(DATA_DIR).filter((file) => /^note_[a-zA-Z0-9_-]+\.json$/.test(file));
+  const files = canonicalNoteFileNames(fs.readdirSync(DATA_DIR));
   for (const file of files) {
     const noteId = file.slice('note_'.length, -'.json'.length);
     const note = loadAppData(file);
@@ -562,7 +738,7 @@ function hydrateNoteCacheSync() {
 async function hydrateNoteCacheAsync() {
   ensureDataDir();
   noteCache.clear();
-  const files = (await fs.promises.readdir(DATA_DIR)).filter((file) => /^note_[a-zA-Z0-9_-]+\.json$/.test(file));
+  const files = canonicalNoteFileNames(await fs.promises.readdir(DATA_DIR));
   for(let index=0;index<files.length;index+=1){
     const file=files[index];
     const noteId=file.slice('note_'.length,-'.json'.length);
@@ -660,14 +836,33 @@ function moveNoteToTrash(noteId) {
   return { ok: true, trashId };
 }
 
+const reportedTrashReadFailures = new Set();
+function reportTrashReadFailure(fileName, detail) {
+  const signature = `${fileName}:${detail}`;
+  if (reportedTrashReadFailures.has(signature)) return;
+  reportedTrashReadFailures.add(signature);
+  queueStartupReliabilityIssue('部分回收站记录无法显示', `“${fileName}”${detail}；该条目已隔离，原文件与备份均未删除。`);
+  const target = [winRegistry.settings, winRegistry.calendar, ...Object.values(winRegistry.notes)]
+    .find((win) => win && !win.isDestroyed());
+  if (target) deliverStartupReliabilityIssues(target);
+}
+
 function listDeletedNotes() {
   if (!fs.existsSync(NOTE_TRASH_DIR)) return [];
-  return fs.readdirSync(NOTE_TRASH_DIR)
-    .filter((name) => name.endsWith('.json'))
+  return canonicalTrashRecordNames(fs.readdirSync(NOTE_TRASH_DIR))
     .flatMap((name) => {
       try {
-        const record = readBusinessJsonFile(path.join(NOTE_TRASH_DIR, name), name);
-        if (!record || !isSafeIdentifier(record.trashId) || !isSafeIdentifier(record.noteId) || !record.note) return [];
+        const record = readBusinessJsonFile(path.join(NOTE_TRASH_DIR, name), name, {
+          validate: isValidTrashRecord,
+          onRecovery: ({ reason, writeError }) => reportTrashReadFailure(
+            name,
+            writeError
+              ? '的有效备份已载入，但主文件写回失败；当前仍显示备份内容，备份原件已保留'
+              : reason === 'missing-primary'
+                ? '的主文件缺失，当前显示内容已从有效备份恢复'
+                : '的主文件内容无效，当前显示内容已从有效备份恢复',
+          ),
+        });
         return [{
           trashId: record.trashId,
           noteId: record.noteId,
@@ -677,6 +872,7 @@ function listDeletedNotes() {
         }];
       } catch (error) {
         console.error('listDeletedNotes failed:', name, error.message);
+        reportTrashReadFailure(name, '及其备份均无法读取');
         return [];
       }
     })
@@ -686,17 +882,24 @@ function listDeletedNotes() {
 function restoreDeletedNote(trashId) {
   if (!isSafeIdentifier(trashId)) return { ok: false, message: '回收站记录无效' };
   const trashPath = path.join(NOTE_TRASH_DIR, `${trashId}.json`);
-  if (!fs.existsSync(trashPath)) {
+  if (![trashPath, `${trashPath}.bak`].some((target) => fs.existsSync(target))) {
     const restored = [...noteCache.values()].find((note) => note && note.restoredFromTrashId === trashId);
     return restored
       ? { ok: true, noteId: restored.id }
       : { ok: false, message: '回收站中已找不到该便签' };
   }
   try {
-    const record = readBusinessJsonFile(trashPath, `trash ${trashId}`);
-    if (!record || !isSafeIdentifier(record.noteId) || !record.note || typeof record.note !== 'object') {
-      return { ok: false, message: '回收站记录已损坏' };
-    }
+    const record = readBusinessJsonFile(trashPath, `trash ${trashId}`, {
+      validate: isValidTrashRecord,
+      onRecovery: ({ reason, writeError }) => reportTrashReadFailure(
+        `${trashId}.json`,
+        writeError
+          ? '的有效备份已载入，但主文件写回失败；恢复操作将直接使用备份，备份原件会保留到事务成功'
+          : reason === 'missing-primary'
+            ? '的主文件缺失，恢复操作已使用有效备份'
+            : '的主文件内容无效，恢复操作已使用有效备份',
+      ),
+    });
     const existing = loadNoteData(record.noteId);
     if (existing && existing.restoredFromTrashId !== trashId) {
       return { ok: false, message: '同名便签已存在，未覆盖现有内容' };
@@ -758,9 +961,6 @@ function notifyNotesChanged(payload = {}, excludeWebContentsId = null) {
 }
 
 const NOTE_COLORS = ['#047857', '#0D9488', '#5EEAD4', '#06B6D4', '#38BDF8', '#2563EB', '#4F46E5', '#8B5CF6', '#C4B5FD', '#D946EF', '#BE185D', '#F9A8D4', '#F43F5E', '#DC2626', '#F97316', '#FDBA74', '#F59E0B', '#FDE047', '#A3E635', '#22C55E', '#84CC16', '#64748B', '#334155', '#92400E'];
-function safeHexColor(value, fallback = '#2563EB') {
-  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
-}
 function todayDateKey() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -772,8 +972,7 @@ function listDailyNoteRecords() {
     const records=[];
     const entries = noteCacheReady
       ? [...noteCache.entries()]
-      : fs.readdirSync(DATA_DIR)
-          .filter((file) => /^note_[a-zA-Z0-9_-]+\.json$/.test(file))
+      : canonicalNoteFileNames(fs.readdirSync(DATA_DIR))
           .map((file) => [file.slice('note_'.length, -'.json'.length), loadAppData(file)]);
     for (const [fileNoteId, raw] of entries) {
       if (raw && typeof raw === 'object' && raw.noteType === 'daily') {
@@ -891,10 +1090,12 @@ function openDailyNoteWindow(activeDate) {
         },
       } : {}),
     };
-    if(!saveNoteData(existingId, nextNote)) return;
+    const saveResult=saveNoteDataResult(existingId,nextNote);
+    if(!saveResult.ok||!saveResult.note) return;
+    const persistedNote=saveResult.note;
     if (note && note.isDocked === true) {
       showCalendar();
-      notifyNotesChanged({note:{...nextNote,id:existingId}});
+      notifyNotesChanged({note:persistedNote});
       const sendFocus = () => {
         const cal = winRegistry.calendar;
         if (cal && !cal.isDestroyed()) cal.webContents.send('focus-note', { noteId: existingId, noteType: 'daily', ...(targetDate ? { dateStr: targetDate } : {}) });
@@ -929,8 +1130,7 @@ function listViewNoteRecords() {
     const records = [];
     const entries = noteCacheReady
       ? [...noteCache.entries()]
-      : fs.readdirSync(DATA_DIR)
-          .filter((file) => /^note_[a-zA-Z0-9_-]+\.json$/.test(file))
+      : canonicalNoteFileNames(fs.readdirSync(DATA_DIR))
           .map((file) => [file.slice('note_'.length, -'.json'.length), loadAppData(file)]);
     for (const [noteId, note] of entries) {
       if (!note || typeof note !== 'object' || note.noteType !== 'echo') continue;
@@ -1011,9 +1211,11 @@ function openViewNoteWindow(options = {}) {
       return existing.id;
     }
     const nextNote = { ...existing.note, id: existing.id, isHidden: false, updatedAt: new Date().toISOString() };
-    if (!saveNoteData(existing.id, nextNote)) return null;
-    notifyNotesChanged({ note: nextNote });
-    if (nextNote.isDocked === true) {
+    const saveResult = saveNoteDataResult(existing.id, nextNote);
+    if (!saveResult.ok || !saveResult.note) return null;
+    const persistedNote = saveResult.note;
+    notifyNotesChanged({ note: persistedNote });
+    if (persistedNote.isDocked === true) {
       showCalendar();
       const sendFocus = () => {
         const calendar = winRegistry.calendar;
@@ -1709,7 +1911,9 @@ function createNoteWindow(noteId,isNew,placement,initialOptions){
   let createdNote=null;
   if(isNew&&!loadNoteData(noteId)){
     createdNote=createInitialNote(noteId,initialOptions||{});
-    if(!saveNoteData(noteId,createdNote)) return null;
+    const createResult=saveNoteDataResult(noteId,createdNote);
+    if(!createResult.ok||!createResult.note) return null;
+    createdNote=createResult.note;
   }
   if(winRegistry.notes[noteId]&&!winRegistry.notes[noteId].isDestroyed()){ensureWindowVisible(winRegistry.notes[noteId]);winRegistry.notes[noteId].show();winRegistry.notes[noteId].focus();return winRegistry.notes[noteId]}
   const{workArea:primaryWorkArea}=screen.getPrimaryDisplay();
@@ -1899,14 +2103,13 @@ const REMINDER_POLL_MS = 15 * 1000;
 const REMINDER_LATE_GRACE_MS = 2 * 60 * 60 * 1000;
 const REMINDER_STATE_FILE = 'reminder-state.json';
 const REMINDER_HISTORY_FILE = 'reminder-history.json';
-const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REMINDER_MAX_CATCH_UP_MS = 3650 * DAY_MS;
-const REMINDER_MAX_EXPANSION_DAYS = Math.ceil(REMINDER_MAX_CATCH_UP_MS / DAY_MS) + 370;
 const REMINDER_CHECKPOINT_MS = 10 * 60 * 1000;
 let reminderTimer = null;
 let reminderState = { fired: {} };
 let reminderHistory = [];
+const reportedReminderDataIssues = new Set();
 let reminderToastSeq = 0;
 const reminderToastWins = new Map();
 const REMINDER_TOAST_WIDTH = 438;
@@ -1914,172 +2117,14 @@ const REMINDER_TOAST_HEIGHT = 154;
 const REMINDER_TOAST_MARGIN = 22;
 const REMINDER_TOAST_GAP = 12;
 
-function isDateKey(value) {
-  if (typeof value !== 'string' || !DATE_KEY_RE.test(value)) return false;
-  const [year, month, day] = value.split('-').map(Number);
-  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const date = new Date(0);
-  date.setUTCFullYear(year, month - 1, day);
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
-function dateKeyToUtcDay(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(0);
-  date.setUTCFullYear(year, month - 1, day);
-  date.setUTCHours(0, 0, 0, 0);
-  return Math.floor(date.getTime() / DAY_MS);
-}
-function formatUtcDateKey(date) {
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
-}
-function addDaysKey(dateStr, days) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(0);
-  date.setUTCFullYear(year, month - 1, day);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() + days);
-  return formatUtcDateKey(date);
-}
-function diffDateKeys(startDate, endDate) {
-  return dateKeyToUtcDay(endDate) - dateKeyToUtcDay(startDate);
-}
-function weekdayFromKey(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(0);
-  date.setUTCFullYear(year, month - 1, day);
-  date.setUTCHours(0, 0, 0, 0);
-  return date.getUTCDay();
-}
-function startOfWeekKey(dateStr) {
-  const weekday = weekdayFromKey(dateStr);
-  return addDaysKey(dateStr, weekday === 0 ? -6 : 1 - weekday);
-}
-function monthDistance(startDate, endDate) {
-  const [startYear, startMonth] = startDate.split('-').map(Number);
-  const [endYear, endMonth] = endDate.split('-').map(Number);
-  return (endYear - startYear) * 12 + (endMonth - startMonth);
-}
-function yearDistance(startDate, endDate) {
-  return Number(endDate.slice(0, 4)) - Number(startDate.slice(0, 4));
-}
-function eventDurationDays(event) {
-  if (!event.endDate || event.endDate === event.startDate) return 0;
-  return Math.max(0, diffDateKeys(event.startDate, event.endDate));
-}
-function eventRangeIntersects(startDate, endDate, rangeStart, rangeEnd) {
-  return endDate >= rangeStart && startDate <= rangeEnd;
-}
-function dateKeyForParts(year, month, day) {
-  const candidate = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  return isDateKey(candidate) ? candidate : null;
-}
-function alignForward(distance, interval) {
-  return Math.max(0, Math.ceil(Math.max(0, distance) / interval) * interval);
-}
-function recurrenceCandidates(event, firstCandidate, rangeEnd) {
-  const recurrence = event.recurrence;
-  if (!recurrence) return [];
-  const interval = Math.max(1, Math.floor(recurrence.interval || 1));
-  const until = isDateKey(recurrence.until) && recurrence.until < rangeEnd ? recurrence.until : rangeEnd;
-  const cappedEnd = addDaysKey(firstCandidate, REMINDER_MAX_EXPANSION_DAYS - 1);
-  const lastCandidate = until < cappedEnd ? until : cappedEnd;
-  if (lastCandidate < firstCandidate) return [];
-  const candidates = [];
-
-  if (recurrence.freq === 'daily') {
-    let offset = alignForward(diffDateKeys(event.startDate, firstCandidate), interval);
-    for (let dateStr = addDaysKey(event.startDate, offset); dateStr <= lastCandidate; offset += interval, dateStr = addDaysKey(event.startDate, offset)) {
-      if (dateStr >= firstCandidate) candidates.push(dateStr);
-    }
-    return candidates;
-  }
-
-  if (recurrence.freq === 'weekly') {
-    const startWeek = startOfWeekKey(event.startDate);
-    const firstWeek = startOfWeekKey(firstCandidate);
-    const firstWeekDistance = Math.floor(diffDateKeys(startWeek, firstWeek) / 7);
-    const weekdayOffsets = [...new Set(
-      (Array.isArray(recurrence.byWeekday) && recurrence.byWeekday.length > 0
-        ? recurrence.byWeekday
-        : [weekdayFromKey(event.startDate)])
-        .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
-        .map((day) => day === 0 ? 6 : day - 1),
-    )].sort((a, b) => a - b);
-    for (let weekOffset = alignForward(firstWeekDistance, interval); ; weekOffset += interval) {
-      const weekStart = addDaysKey(startWeek, weekOffset * 7);
-      if (weekStart > lastCandidate) break;
-      for (const dayOffset of weekdayOffsets) {
-        const dateStr = addDaysKey(weekStart, dayOffset);
-        if (dateStr >= event.startDate && dateStr >= firstCandidate && dateStr <= lastCandidate) candidates.push(dateStr);
-      }
-    }
-    return candidates;
-  }
-
-  if (recurrence.freq === 'monthly') {
-    const [startYear, startMonth] = event.startDate.split('-').map(Number);
-    const days = [...new Set(
-      (Array.isArray(recurrence.byMonthDay) && recurrence.byMonthDay.length > 0
-        ? recurrence.byMonthDay
-        : [Number(event.startDate.slice(8, 10))])
-        .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31),
-    )].sort((a, b) => a - b);
-    const firstMonthDistance = monthDistance(event.startDate, firstCandidate);
-    for (let monthOffset = alignForward(firstMonthDistance, interval); ; monthOffset += interval) {
-      const absoluteMonth = startYear * 12 + startMonth - 1 + monthOffset;
-      const year = Math.floor(absoluteMonth / 12);
-      const month = absoluteMonth % 12 + 1;
-      const monthStart = dateKeyForParts(year, month, 1);
-      if (!monthStart || monthStart > lastCandidate) break;
-      for (const day of days) {
-        const dateStr = dateKeyForParts(year, month, day);
-        if (dateStr && dateStr >= event.startDate && dateStr >= firstCandidate && dateStr <= lastCandidate) candidates.push(dateStr);
-      }
-    }
-    return candidates;
-  }
-
-  const [startYear, startMonth, startDay] = event.startDate.split('-').map(Number);
-  const firstYearDistance = yearDistance(event.startDate, firstCandidate);
-  for (let yearOffset = alignForward(firstYearDistance, interval); ; yearOffset += interval) {
-    const year = startYear + yearOffset;
-    const yearStart = dateKeyForParts(year, 1, 1);
-    if (!yearStart || yearStart > lastCandidate) break;
-    const dateStr = dateKeyForParts(year, startMonth, startDay);
-    if (!dateStr) continue;
-    if (dateStr > lastCandidate) break;
-    if (dateStr >= event.startDate && dateStr >= firstCandidate) candidates.push(dateStr);
-  }
-  return candidates;
-}
-function expandEventsInRangeMain(events, rangeStart, rangeEnd) {
-  if (!isDateKey(rangeStart) || !isDateKey(rangeEnd) || rangeEnd < rangeStart) return [];
-  const expanded = [];
-  for (const event of events) {
-    if (!event || typeof event !== 'object' || !isDateKey(event.startDate)) continue;
-    const durationDays = eventDurationDays(event);
-    if (!event.recurrence) {
-      const endDate = event.endDate || event.startDate;
-      if (eventRangeIntersects(event.startDate, endDate, rangeStart, rangeEnd)) expanded.push(event);
-      continue;
-    }
-    const rangeCandidate = addDaysKey(rangeStart, -durationDays);
-    const firstCandidate = event.startDate > rangeCandidate ? event.startDate : rangeCandidate;
-    for (const occurrenceStart of recurrenceCandidates(event, firstCandidate, rangeEnd)) {
-      const occurrenceEnd = addDaysKey(occurrenceStart, durationDays);
-      if (!eventRangeIntersects(occurrenceStart, occurrenceEnd, rangeStart, rangeEnd)) continue;
-      expanded.push({
-        ...event,
-        startDate: occurrenceStart,
-        endDate: durationDays > 0 ? occurrenceEnd : undefined,
-        seriesId: event.id,
-        occurrenceDate: occurrenceStart,
-        occurrenceKey: `${event.id}__${occurrenceStart}`,
-      });
-    }
-  }
-  return expanded;
+function reportReminderDataIssue(title, message) {
+  const signature = `${title}:${message}`;
+  if (reportedReminderDataIssues.has(signature)) return;
+  reportedReminderDataIssues.add(signature);
+  queueStartupReliabilityIssue(title, message);
+  const target = [winRegistry.calendar, winRegistry.settings, ...Object.values(winRegistry.notes)]
+    .find((win) => win && !win.isDestroyed());
+  if (target) deliverStartupReliabilityIssues(target);
 }
 function loadReminderState() {
   const raw = loadAppData(REMINDER_STATE_FILE);
@@ -2087,7 +2132,14 @@ function loadReminderState() {
     ? { fired: raw.fired, ...(typeof raw.lastCheckedAt === 'string' ? { lastCheckedAt: raw.lastCheckedAt } : {}) }
     : { fired: {} };
   const history = loadAppData(REMINDER_HISTORY_FILE);
-  reminderHistory = Array.isArray(history) ? history.slice(-500) : [];
+  const normalizedHistory = normalizeReminderHistory(history, 500);
+  reminderHistory = normalizedHistory.entries;
+  if (normalizedHistory.rejectedCount > 0) {
+    reportReminderDataIssue(
+      '部分提醒记录已隔离',
+      `提醒历史中有 ${normalizedHistory.rejectedCount} 条损坏记录未载入；日历与其余提醒仍可使用，原文件会保留为下一次写入前的备份。`,
+    );
+  }
 }
 function saveReminderState() {
   return saveAppData(REMINDER_STATE_FILE, reminderState);
@@ -2113,11 +2165,6 @@ function cleanupReminderState() {
   if (changed && !saveReminderState()) {
     broadcastPersistenceFailure('提醒状态未保存','提醒清理状态写入失败，稍后会自动重试。');
   }
-}
-function localDateKeyFromMillis(timestamp) {
-  const date = new Date(timestamp);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 function createReminderToastHtml(event, playSound) {
   const timeLabel = event.isAllDay ? '全天（09:00 提醒）' : (event.startTime || '未设置开始时间');
@@ -2368,28 +2415,29 @@ function broadcastReminderHistory() {
 }
 function checkEventReminders() {
   try {
-    const events = loadEventsSnapshot(Boolean(eventsLoadError));
+    const storedEvents = loadEventsSnapshot(Boolean(eventsLoadError));
     const nowMs = Date.now();
     if (eventsLoadError) {
       console.warn('Reminder scan deferred until events can be read:', eventsLoadError);
       return;
     }
+    const normalized = normalizeReminderEvents(storedEvents);
+    if (normalized.rejectedCount > 0 || normalized.repairedCount > 0) {
+      reportReminderDataIssue(
+        '部分事件未按原值参与提醒扫描',
+        `${normalized.rejectedCount} 条事件已隔离，${normalized.repairedCount} 条事件的非法可选字段已忽略；其他提醒仍会继续扫描，事件文件未被改写。`,
+      );
+    }
+    const events = normalized.events.filter((event) => event.reminder && event.reminder.enabled === true);
     if (events.length === 0) {
       checkpointReminderState(nowMs);
       return;
     }
-    const today = todayDateKey();
     const previousCheckMs = Date.parse(reminderState.lastCheckedAt || '');
     const catchUpStartMs = Number.isFinite(previousCheckMs)
       ? Math.max(previousCheckMs, nowMs - REMINDER_MAX_CATCH_UP_MS)
       : nowMs - REMINDER_LATE_GRACE_MS;
-    const maxBefore = events.reduce((max, event) => {
-      const reminder = event && event.reminder;
-      return reminder && reminder.enabled ? Math.max(max, Number(reminder.minutesBefore) || 0) : max;
-    }, 0);
-    const rangeStart = addDaysKey(localDateKeyFromMillis(catchUpStartMs), -1);
-    const rangeEnd = addDaysKey(today, Math.max(8, Math.ceil(maxBefore / 1440) + 2));
-    const expanded = expandEventsInRangeMain(events, rangeStart, rangeEnd);
+    const expanded = expandReminderEventsForDueWindow(events, catchUpStartMs, nowMs);
     const due = collectDueReminders({
       events: expanded,
       fired: reminderState.fired,
@@ -2477,105 +2525,6 @@ function broadcastEventsChanged(data={}){
 }
 
 // ── IPC ──
-function sanitizeSettingChange(scope, key, value) {
-  if (scope === 'theme' && key === 'themeMode') return value === 'light' || value === 'dark' ? value : undefined;
-  if (scope === 'global' && key === 'globalFontSize') return clampFontSetting(value);
-  if (scope === 'global' && key === 'globalFontFamily') return safeFontFamily(value, undefined);
-  if (scope === 'global' && key === 'startMinimized') return value === true;
-  if (scope === 'global' && key === 'hideNotificationContent') return value === true;
-  if (scope !== 'calendar' && scope !== 'notes') return undefined;
-  if (key === 'fontFamily') return safeFontFamily(value, undefined);
-  if (key === 'fontSize') return clampFontSetting(value);
-  if (key === 'backgroundColor' || key === 'textColor') {
-    return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : undefined;
-  }
-  if (key === 'backgroundOpacity') {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? safeOpacity(numeric) : undefined;
-  }
-  if (scope === 'calendar' && key === 'edgeAutoHide') return !!value;
-  if (scope === 'calendar' && key === 'showDockArea') return !!value;
-  return undefined;
-}
-
-function sanitizeTagPayload(tag) {
-  if (!tag || typeof tag !== 'object' || !isSafeIdentifier(tag.id)) return null;
-  const name = typeof tag.name === 'string' ? tag.name.trim().slice(0, 50) : '';
-  if (!name) return null;
-  return {
-    id: tag.id,
-    name,
-    color: safeHexColor(tag.color),
-    createdAt: typeof tag.createdAt === 'string' ? tag.createdAt : new Date().toISOString(),
-  };
-}
-
-function sanitizeEventRecurrence(value, startDate) {
-  if (!value || typeof value !== 'object') return undefined;
-  if (!['daily', 'weekly', 'monthly', 'yearly'].includes(value.freq)) return undefined;
-  const recurrence = {
-    freq: value.freq,
-    interval: Math.min(365, Math.max(1, Math.floor(Number(value.interval) || 1))),
-  };
-  if (value.freq === 'weekly' && Array.isArray(value.byWeekday)) {
-    const weekdays = [...new Set(value.byWeekday.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))];
-    if (weekdays.length > 0) recurrence.byWeekday = weekdays;
-  }
-  if (value.freq === 'monthly' && Array.isArray(value.byMonthDay)) {
-    const monthDays = [...new Set(value.byMonthDay.map(Number).filter((day) => Number.isInteger(day) && day >= 1 && day <= 31))];
-    if (monthDays.length > 0) recurrence.byMonthDay = monthDays;
-  }
-  if (isDateKey(value.until) && value.until >= startDate) recurrence.until = value.until;
-  return recurrence;
-}
-
-function sanitizeEventReminder(value) {
-  if (!value || typeof value !== 'object' || value.enabled !== true) return undefined;
-  return {
-    enabled: true,
-    minutesBefore: Math.min(525600, Math.max(0, Math.floor(Number(value.minutesBefore) || 0))),
-    playSound: value.playSound === true,
-  };
-}
-
-function sanitizeEventPayload(eventData, existing = null) {
-  if (!eventData || typeof eventData !== 'object' || !isSafeIdentifier(eventData.id)) return null;
-  if (!isDateKey(eventData.startDate)) return null;
-  const title = typeof eventData.title === 'string' ? eventData.title.trim().slice(0, 200) : '';
-  if (!title) return null;
-  const endDate = isDateKey(eventData.endDate) && eventData.endDate >= eventData.startDate ? eventData.endDate : undefined;
-  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
-  const startTime = typeof eventData.startTime === 'string' && timePattern.test(eventData.startTime) ? eventData.startTime : undefined;
-  const endTime = typeof eventData.endTime === 'string' && timePattern.test(eventData.endTime) ? eventData.endTime : undefined;
-  const recurrence = sanitizeEventRecurrence(eventData.recurrence, eventData.startDate);
-  const reminder = sanitizeEventReminder(eventData.reminder);
-  const next = {
-    ...(existing && typeof existing === 'object' ? existing : {}),
-    id: eventData.id,
-    title,
-    description: typeof eventData.description === 'string' ? eventData.description.slice(0, 2000) : '',
-    startDate: eventData.startDate,
-    isAllDay: eventData.isAllDay === true,
-    color: safeHexColor(eventData.color),
-    createdAt: existing && typeof existing.createdAt === 'string'
-      ? existing.createdAt
-      : (typeof eventData.createdAt === 'string' ? eventData.createdAt : new Date().toISOString()),
-    updatedAt: new Date().toISOString(),
-  };
-  for (const key of ['endDate', 'startTime', 'endTime', 'tagId', 'recurrence', 'reminder', 'occurrenceKey', 'occurrenceDate', 'seriesId']) {
-    delete next[key];
-  }
-  if (endDate && endDate !== eventData.startDate) next.endDate = endDate;
-  if (eventData.isAllDay !== true) {
-    if (startTime) next.startTime = startTime;
-    if (endTime) next.endTime = endTime;
-  }
-  if (isSafeIdentifier(eventData.tagId)) next.tagId = eventData.tagId;
-  if (recurrence) next.recurrence = recurrence;
-  if (reminder && (next.isAllDay || startTime)) next.reminder = reminder;
-  return next;
-}
-
 function eventMutationFailure(code, message) {
   return { ok: false, code, message, ...getEventsState() };
 }
@@ -2635,6 +2584,14 @@ function getRendererContext(event) {
 }
 
 function setupIPC(){
+  if (isIsolatedTestInstance) {
+    ipcMain.handle('__finish-isolated-test', () => {
+      forceAppQuit = true;
+      app.isQuitting = true;
+      setImmediate(() => app.quit());
+      return { ok: true };
+    });
+  }
   ipcMain.handle('get-settings',()=>({
     themeMode: appSettings.themeMode,
     autoLaunch: appSettings.autoLaunch,
@@ -2728,11 +2685,15 @@ function setupIPC(){
       broadcastPersistenceFailure('便签保持打开','没有收到当前便签的完整内容，已取消隐藏以避免丢失修改。');
       return {ok:false,message:'没有收到当前便签的完整内容'};
     }
+    if(!confirmDiscardWindowDrafts(win,'隐藏')) {
+      return {ok:false,canceled:true,message:'已取消隐藏，便签和草稿均保留'};
+    }
     const nextNote={...noteSnapshot,id:noteId,isHidden:true,updatedAt:new Date().toISOString()};
-    if(!saveNoteData(noteId,nextNote)){
+    const saveResult=saveNoteDataResult(noteId,nextNote);
+    if(!saveResult.ok||!saveResult.note){
       return {ok:false,message:'便签写入失败，窗口已保持打开'};
     }
-    const persisted=loadNoteData(noteId)||nextNote;
+    const persisted=saveResult.note;
     notifyNotesChanged({note:persisted});
     saveWindowBounds();
     closeWindowWithoutDraftPrompt(win);
@@ -2749,13 +2710,15 @@ function setupIPC(){
     if(!confirmDiscardNoteDrafts([noteId],'隐藏',w||getRendererContext(event).win)) return {ok:false,canceled:true,message:'已取消，便签和草稿均保留'};
     if(note&&note.isDocked===true){
       const nextNote={...note,isDocked:true,isHidden:true};
-      if(!saveNoteData(noteId,nextNote)) return {ok:false,message:'便签状态未能写入磁盘'};
-      notifyNotesChanged({note:nextNote});
-      return {ok:true,note:nextNote};
+      const saveResult=saveNoteDataResult(noteId,nextNote);
+      if(!saveResult.ok||!saveResult.note) return {ok:false,message:'便签状态未能写入磁盘'};
+      notifyNotesChanged({note:saveResult.note});
+      return {ok:true,note:saveResult.note};
     }
     const nextNote={...note,isHidden:true};
-    if(!saveNoteData(noteId,nextNote)) return {ok:false,message:'便签状态未能写入磁盘'};
-    const persisted=loadNoteData(noteId)||nextNote;
+    const saveResult=saveNoteDataResult(noteId,nextNote);
+    if(!saveResult.ok||!saveResult.note) return {ok:false,message:'便签状态未能写入磁盘'};
+    const persisted=saveResult.note;
     notifyNotesChanged({note:persisted});
     if(w&&!w.isDestroyed()){
       saveWindowBounds();
@@ -2820,29 +2783,34 @@ function setupIPC(){
   ipcMain.on('open-event-editor',(_event,eventData)=>openEventEditorInCalendar(eventData));
 
   // ── Note visibility management ──
-  ipcMain.on('show-note',(_event,noteId)=>{
-    if(isSafeIdentifier(noteId)){
-      const note=loadNoteData(noteId);
-      if(!note){
-        broadcastPersistenceFailure('便签状态未更新','无法读取该便签，未执行显示操作。');
-        return;
-      }
-      if(note&&note.isDocked===true){
-        const nextNote={...note,isDocked:true,isHidden:false};
-        if(!saveNoteData(noteId,nextNote)) return;
-        showCalendar();
-        notifyNotesChanged({note:nextNote});
-        setTimeout(()=>{
-          const cal=winRegistry.calendar;
-          if(cal&&!cal.isDestroyed()) cal.webContents.send('focus-note',{noteId,noteType:note.noteType||'independent'});
-        },120);
-        return;
-      }
-      const nextNote={...note,isHidden:false};
-      if(!saveNoteData(noteId,nextNote)) return;
-      notifyNotesChanged({note:loadNoteData(noteId)||nextNote});
-      createNoteWindow(noteId);
+  ipcMain.handle('show-note',(_event,noteId)=>{
+    if(!isSafeIdentifier(noteId)) return {ok:false,message:'便签 ID 无效'};
+    const note=loadNoteData(noteId);
+    if(!note){
+      broadcastPersistenceFailure('便签状态未更新','无法读取该便签，未执行显示操作。');
+      return {ok:false,message:'无法读取该便签'};
     }
+    const nextNote={...note,isHidden:false};
+    const saveResult=saveNoteDataResult(noteId,nextNote);
+    if(!saveResult.ok||!saveResult.note) return {ok:false,message:'便签状态未能写入磁盘'};
+    const persisted=saveResult.note;
+    if(persisted.isDocked===true){
+      showCalendar();
+      notifyNotesChanged({note:persisted});
+      setTimeout(()=>{
+        const cal=winRegistry.calendar;
+        if(cal&&!cal.isDestroyed()) cal.webContents.send('focus-note',{noteId,noteType:persisted.noteType||'independent'});
+      },120);
+      return {ok:true,note:persisted};
+    }
+    const noteWindow=createNoteWindow(noteId);
+    if(!noteWindow||noteWindow.isDestroyed()){
+      const rollbackResult=saveNoteDataResult(noteId,{...persisted,isHidden:true});
+      if(rollbackResult.ok&&rollbackResult.note) notifyNotesChanged({note:rollbackResult.note});
+      return {ok:false,message:'便签窗口未能打开，已恢复为隐藏状态'};
+    }
+    notifyNotesChanged({note:persisted});
+    return {ok:true,note:persisted};
   });
   ipcMain.handle('get-visible-note-ids',()=>Object.entries(winRegistry.notes)
     .filter(([,w])=>w&&!w.isDestroyed()&&w.isVisible())
@@ -2894,12 +2862,13 @@ function setupIPC(){
       }
       const note=loadNoteData(drag.noteId);
       const nextNote={...(note||{}),...drag.noteSnapshot,isDocked:true,dockedOrder:Number.isFinite((note||{}).dockedOrder)?note.dockedOrder:Date.now()};
-      if(!saveNoteData(drag.noteId,nextNote)){
+      const saveResult=saveNoteDataResult(drag.noteId,nextNote);
+      if(!saveResult.ok||!saveResult.note){
         drag.win.webContents.send('note-dock-hover',false);
         return;
       }
       closeWindowWithoutDraftPrompt(drag.win);
-      notifyNotesChanged({note:nextNote});
+      notifyNotesChanged({note:saveResult.note});
       return;
     }
     drag.win.webContents.send('note-dock-hover',false);
@@ -3009,26 +2978,32 @@ function setupIPC(){
 
   // ── Tag management ──
   ipcMain.handle('get-tags',()=>{
-    try{return loadAppData('tags.json')||[]}catch(e){return[]}
+    try{return loadTagsState()}catch(e){
+      console.error('get-tags failed:',e.message);
+      return {tags:[],loadError:'标签数据无法读取；标签已切换为只读，原文件不会被覆盖。'};
+    }
   });
   ipcMain.handle('save-tag',(_event,tag)=>{
     try{
       const safeTag=sanitizeTagPayload(tag);
-      if(!safeTag) return false;
-      const tags=loadAppData('tags.json')||[];
-      if(!Array.isArray(tags)) return false;
+      if(!safeTag) return {ok:false,message:'标签内容无效'};
+      const state=loadTagsState();
+      if(state.loadError) return {ok:false,loadError:state.loadError,message:state.loadError};
+      const tags=[...state.tags];
       const idx=tags.findIndex(t=>t.id===safeTag.id);
       if(idx>=0) tags[idx]=safeTag;
       else tags.push(safeTag);
-      return saveAppData('tags.json',tags);
-    }catch(e){console.error('save-tag failed:',e.message);return false}
+      if(!saveAppData('tags.json',tags)) return {ok:false,message:'标签未能写入磁盘'};
+      tagsLoadError=null;
+      return {ok:true,tag:safeTag};
+    }catch(e){console.error('save-tag failed:',e.message);return {ok:false,message:'标签未能保存，原数据已保留'}}
   });
   ipcMain.handle('delete-tag',(event,tagId)=>{
     try{
       if(!isSafeIdentifier(tagId)) return {ok:false,message:'标签 ID 无效'};
-      let tags=loadAppData('tags.json')||[];
-      if(!Array.isArray(tags)) return {ok:false,message:'标签数据无法读取'};
-      tags=tags.filter(t=>t.id!==tagId);
+      const state=loadTagsState();
+      if(state.loadError) return {ok:false,loadError:state.loadError,message:state.loadError};
+      const tags=state.tags.filter(t=>t.id!==tagId);
       const events=loadEventsSnapshot();
       if(eventsLoadError) return {ok:false,message:eventsLoadError};
       const updatedEvents=events.map(ev=>{
@@ -3112,10 +3087,12 @@ function setupIPC(){
   });
   ipcMain.handle('get-events-by-tag',(_event,tagId)=>{
     try{
-      if(!isSafeIdentifier(tagId)) return [];
       const events=loadEventsSnapshot();
-      return events.filter(ev=>ev.tagId===tagId);
-    }catch(e){return[]}
+      return eventsByTag(events,tagId,eventsLoadError);
+    }catch(e){
+      console.error('get-events-by-tag failed:',e.message);
+      throw e;
+    }
   });
 
   // ── Dock management (window lifecycle only; render manages dock UI) ──
@@ -3126,10 +3103,12 @@ function setupIPC(){
     if(w&&!w.isDestroyed()&&!confirmDiscardWindowDrafts(w,'挂载')) return {ok:false,canceled:true,message:'已取消挂载，草稿仍保留'};
     const snapshot=noteSnapshot&&typeof noteSnapshot==='object'?noteSnapshot:{};
     const nextNote={...snapshot,isDocked:true,dockedOrder:Number.isFinite(snapshot.dockedOrder)?snapshot.dockedOrder:Date.now()};
-    if(!saveNoteData(noteId,nextNote)) return {ok:false,message:'便签状态未能写入磁盘'};
+    const saveResult=saveNoteDataResult(noteId,nextNote);
+    if(!saveResult.ok||!saveResult.note) return {ok:false,message:'便签状态未能写入磁盘'};
+    const persisted=saveResult.note;
     if(w&&!w.isDestroyed()) closeWindowWithoutDraftPrompt(w); // close window, renderer renders in calendar
-    notifyNotesChanged({note:nextNote});
-    return {ok:true,note:nextNote};
+    notifyNotesChanged({note:persisted});
+    return {ok:true,note:persisted};
   });
   const undockNoteFromCalendar=(noteId,noteSnapshot,placement)=>{
     if(!isSafeIdentifier(noteId)) return {ok:false,message:'便签 ID 无效'};
@@ -3138,17 +3117,17 @@ function setupIPC(){
     if(!existing) return {ok:false,message:'找不到要取消挂载的便签'};
     const snapshot=noteSnapshot&&typeof noteSnapshot==='object'?noteSnapshot:{};
     const nextNote={...existing,...snapshot,id:noteId,isDocked:false,isHidden:false};
-    if(!saveNoteData(noteId,nextNote)) return {ok:false,message:'便签状态未能写入磁盘'};
+    const saveResult=saveNoteDataResult(noteId,nextNote);
+    if(!saveResult.ok||!saveResult.note) return {ok:false,message:'便签状态未能写入磁盘'};
+    const persisted=saveResult.note;
     const noteWindow=createNoteWindow(noteId,false,placement);
     if(!noteWindow||noteWindow.isDestroyed()){
-      const rollbackNote={...nextNote,isDocked:true};
-      saveNoteData(noteId,rollbackNote);
-      notifyNotesChanged({note:rollbackNote});
+      const rollbackResult=saveNoteDataResult(noteId,{...persisted,isDocked:true});
+      if(rollbackResult.ok&&rollbackResult.note) notifyNotesChanged({note:rollbackResult.note});
       return {ok:false,message:'便签窗口未能打开，已保留在挂载区'};
     }
-    const savedNote=loadNoteData(noteId)||nextNote;
-    notifyNotesChanged({note:savedNote});
-    return {ok:true,note:savedNote};
+    notifyNotesChanged({note:persisted});
+    return {ok:true,note:persisted};
   };
   ipcMain.handle('undock-note',(_event,noteId,noteSnapshot)=>undockNoteFromCalendar(noteId,noteSnapshot));
   ipcMain.handle('undock-note-at',(_event,noteId,x,y,noteSnapshot)=>{
@@ -3205,6 +3184,7 @@ if (!hasSingleInstanceLock) {
     session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     ensureDataDir();
+    prepareLegacyLocalData();
     loadSettings();
     loadWindowBounds();
     setupIPC();createTray();

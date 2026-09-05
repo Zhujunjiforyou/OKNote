@@ -7,6 +7,28 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+export function focusAdjacentInteractiveElement(origin: HTMLElement | null, backwards = false): void {
+  if (!origin) return
+  const candidates = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((element) => {
+    if (element.getAttribute('aria-hidden') === 'true') return false
+    const style = window.getComputedStyle(element)
+    return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0
+  })
+  const originIndex = candidates.indexOf(origin)
+  const target = originIndex >= 0 ? candidates[originIndex + (backwards ? -1 : 1)] : null
+  if (target) target.focus()
+  else origin.focus()
+}
+
 let fallbackIdSequence = 0
 export function generateId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
@@ -73,14 +95,45 @@ export function isLightColor(hex: string): boolean {
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/
 const DAY_MS = 24 * 60 * 60 * 1000
+export const MIN_SUPPORTED_DATE_KEY = '1900-01-01'
+export const MAX_SUPPORTED_DATE_KEY = '2100-12-31'
+const SAFE_IDENTIFIER_RE = /^[a-zA-Z0-9_-]{1,160}$/
 
-export function isDateKey(value: unknown): value is string {
+export function isSafeIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_IDENTIFIER_RE.test(value)
+}
+
+export function isImeComposing(event: {
+  isComposing?: boolean
+  keyCode?: number
+  nativeEvent?: { isComposing?: boolean; keyCode?: number }
+}): boolean {
+  return event.isComposing === true
+    || event.nativeEvent?.isComposing === true
+    || event.keyCode === 229
+    || event.nativeEvent?.keyCode === 229
+}
+
+function isRealDateKey(value: unknown): value is string {
   if (typeof value !== 'string' || !DATE_KEY_RE.test(value)) return false
   const [year, month, day] = value.split('-').map(Number)
-  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return false
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false
   const date = new Date(0)
   date.setUTCFullYear(year, month - 1, day)
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
+function getSupportedDateRange(rangeStart: string, rangeEnd: string): { start: string; end: string } | null {
+  if (!isRealDateKey(rangeStart) || !isRealDateKey(rangeEnd) || rangeEnd < rangeStart) return null
+  if (rangeStart > MAX_SUPPORTED_DATE_KEY || rangeEnd < MIN_SUPPORTED_DATE_KEY) return null
+  return {
+    start: rangeStart < MIN_SUPPORTED_DATE_KEY ? MIN_SUPPORTED_DATE_KEY : rangeStart,
+    end: rangeEnd > MAX_SUPPORTED_DATE_KEY ? MAX_SUPPORTED_DATE_KEY : rangeEnd,
+  }
+}
+
+export function isDateKey(value: unknown): value is string {
+  return isRealDateKey(value) && value >= MIN_SUPPORTED_DATE_KEY && value <= MAX_SUPPORTED_DATE_KEY
 }
 
 function pad2(value: number): string {
@@ -346,10 +399,8 @@ export function compareCalendarEventStart(a: CalendarEvent, b: CalendarEvent): n
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 export function normalizeCalendarEvent(raw: unknown): CalendarEvent | null {
-  if (!isRecord(raw) || !isDateKey(raw.startDate)) return null
-  const id = typeof raw.id === 'string' && raw.id.trim() && raw.id.length <= 160
-    ? raw.id
-    : generateId()
+  if (!isRecord(raw) || !isSafeIdentifier(raw.id) || !isDateKey(raw.startDate)) return null
+  const id = raw.id
   const title = typeof raw.title === 'string' && raw.title.trim()
     ? raw.title.trim().slice(0, 200)
     : '未命名事件'
@@ -398,7 +449,7 @@ export function normalizeCalendarEvent(raw: unknown): CalendarEvent | null {
     ...(endTime ? { endTime } : {}),
     isAllDay,
     color: normalizeHexColor(raw.color),
-    ...(typeof raw.tagId === 'string' && raw.tagId.length <= 160 ? { tagId: raw.tagId } : {}),
+    ...(isSafeIdentifier(raw.tagId) ? { tagId: raw.tagId } : {}),
     ...(recurrence ? { recurrence } : {}),
     ...(reminder ? { reminder } : {}),
     createdAt,
@@ -417,7 +468,9 @@ export function normalizeCalendarEvents(raw: unknown): CalendarEvent[] {
 }
 
 export function expandEventsInRange(events: CalendarEvent[], rangeStart: string, rangeEnd: string): CalendarEvent[] {
-  if (!isDateKey(rangeStart) || !isDateKey(rangeEnd) || rangeEnd < rangeStart) return []
+  const supportedRange = getSupportedDateRange(rangeStart, rangeEnd)
+  if (!supportedRange) return []
+  const { start: effectiveRangeStart, end: effectiveRangeEnd } = supportedRange
 
   const expanded: CalendarEvent[] = []
   for (const event of events) {
@@ -426,21 +479,21 @@ export function expandEventsInRange(events: CalendarEvent[], rangeStart: string,
 
     if (!event.recurrence) {
       const endDate = event.endDate || event.startDate
-      if (eventRangeIntersects(event.startDate, endDate, rangeStart, rangeEnd)) {
+      if (eventRangeIntersects(event.startDate, endDate, effectiveRangeStart, effectiveRangeEnd)) {
         expanded.push(event)
       }
       continue
     }
 
-    const rangeCandidate = addDaysToDateKey(rangeStart, -durationDays)
+    const rangeCandidate = addDaysToDateKey(effectiveRangeStart, -durationDays)
     const firstCandidate = event.startDate > rangeCandidate ? event.startDate : rangeCandidate
-    const totalDays = Math.min(Math.max(0, diffDateKeys(firstCandidate, rangeEnd)) + 1, 3660)
+    const totalDays = Math.min(Math.max(0, diffDateKeys(firstCandidate, effectiveRangeEnd)) + 1, 3660)
 
     for (let i = 0; i < totalDays; i += 1) {
       const occurrenceStart = addDaysToDateKey(firstCandidate, i)
       if (!recurrenceMatchesDate(event, occurrenceStart)) continue
       const occurrenceEnd = addDaysToDateKey(occurrenceStart, durationDays)
-      if (!eventRangeIntersects(occurrenceStart, occurrenceEnd, rangeStart, rangeEnd)) continue
+      if (!eventRangeIntersects(occurrenceStart, occurrenceEnd, effectiveRangeStart, effectiveRangeEnd)) continue
       expanded.push({
         ...event,
         startDate: occurrenceStart,
@@ -456,12 +509,14 @@ export function expandEventsInRange(events: CalendarEvent[], rangeStart: string,
 
 export function buildEventsByDate(events: CalendarEvent[], rangeStart: string, rangeEnd: string): Map<string, CalendarEvent[]> {
   const map = new Map<string, CalendarEvent[]>()
-  const expanded = expandEventsInRange(events, rangeStart, rangeEnd)
+  const supportedRange = getSupportedDateRange(rangeStart, rangeEnd)
+  if (!supportedRange) return map
+  const expanded = expandEventsInRange(events, supportedRange.start, supportedRange.end)
 
   for (const event of expanded) {
     const endDate = event.endDate || event.startDate
-    const start = event.startDate < rangeStart ? rangeStart : event.startDate
-    const end = endDate > rangeEnd ? rangeEnd : endDate
+    const start = event.startDate < supportedRange.start ? supportedRange.start : event.startDate
+    const end = endDate > supportedRange.end ? supportedRange.end : endDate
     const days = Math.max(0, diffDateKeys(start, end))
     for (let i = 0; i <= days; i += 1) {
       const dateStr = addDaysToDateKey(start, i)
@@ -483,13 +538,14 @@ export interface CalendarTodoPreview {
 
 export function buildDailyTodoItemsByDate(notes: Note[], rangeStart: string, rangeEnd: string): Map<string, CalendarTodoPreview[]> {
   const map = new Map<string, CalendarTodoPreview[]>()
-  if (!isDateKey(rangeStart) || !isDateKey(rangeEnd) || rangeEnd < rangeStart) return map
+  const supportedRange = getSupportedDateRange(rangeStart, rangeEnd)
+  if (!supportedRange) return map
 
   for (const note of notes) {
     if (note.noteType !== 'daily') continue
     for (const item of note.items || []) {
       if (item.isCompleted || !isDateKey(item.todoDate)) continue
-      if (item.todoDate < rangeStart || item.todoDate > rangeEnd) continue
+      if (item.todoDate < supportedRange.start || item.todoDate > supportedRange.end) continue
       const items = map.get(item.todoDate) || []
       items.push({
         id: item.id,

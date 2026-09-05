@@ -15,6 +15,36 @@ export interface ReminderHistoryEntry {
   scheduledFor?: string
 }
 
+const SAFE_IDENTIFIER_RE = /^[a-zA-Z0-9_-]{1,160}$/
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+
+export function normalizeReminderHistoryEntries(raw: unknown): ReminderHistoryEntry[] {
+  if (!Array.isArray(raw)) return []
+  const seenIds = new Set<string>()
+  return raw.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const entry = value as Record<string, unknown>
+    if (typeof entry.id !== 'string' || !SAFE_IDENTIFIER_RE.test(entry.id) || seenIds.has(entry.id)) return []
+    if (typeof entry.eventId !== 'string' || !SAFE_IDENTIFIER_RE.test(entry.eventId)) return []
+    if (typeof entry.startDate !== 'string' || !DATE_KEY_RE.test(entry.startDate)) return []
+    if (typeof entry.firedAt !== 'string' || !Number.isFinite(Date.parse(entry.firedAt))) return []
+    seenIds.add(entry.id)
+    return [{
+      id: entry.id,
+      eventId: entry.eventId,
+      title: typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim().slice(0, 200) : '未命名事件',
+      startDate: entry.startDate,
+      ...(typeof entry.startTime === 'string' && TIME_RE.test(entry.startTime) ? { startTime: entry.startTime } : {}),
+      isAllDay: entry.isAllDay === true,
+      firedAt: entry.firedAt,
+      read: entry.read === true,
+      ...(entry.missed === true ? { missed: true } : {}),
+      ...(typeof entry.scheduledFor === 'string' && Number.isFinite(Date.parse(entry.scheduledFor)) ? { scheduledFor: entry.scheduledFor } : {}),
+    }]
+  }).slice(-500)
+}
+
 interface ReminderCenterProps {
   open: boolean
   entries: ReminderHistoryEntry[]

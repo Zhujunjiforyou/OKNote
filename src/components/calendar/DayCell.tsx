@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom'
 import { CalendarEvent } from '@/types/calendar.types'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
-import { cn, getEventInstanceKey, hexToLuminance, normalizeHexColor, type CalendarTodoPreview } from '@/lib/utils'
+import { cn, focusAdjacentInteractiveElement, getEventInstanceKey, hexToLuminance, isDateKey, normalizeHexColor, type CalendarTodoPreview } from '@/lib/utils'
 import { isHolidayLabelDay } from '@/lib/holidays'
 import { format, isSameDay } from 'date-fns'
-import { CalendarPlus, CalendarRange } from 'lucide-react'
+import { CalendarPlus, CalendarRange, ListTodo } from 'lucide-react'
 
 const CONTEXT_MENU_WIDTH = 224
 const CONTEXT_MENU_HEIGHT = 150
@@ -60,6 +60,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
   const cellRef = useRef<HTMLDivElement>(null)
   const eventListRef = useRef<HTMLDivElement>(null)
   const isSelected = isSameDay(day, currentDate)
+  const isSupportedDate = isDateKey(dateStr)
 
   useEffect(() => {
     if (!contextMenu) return
@@ -125,6 +126,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault()
+    if (!isSupportedDate) return
     e.stopPropagation()
     onRightClick(e)
     openContextMenuAt(e.clientX, e.clientY)
@@ -143,6 +145,19 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
   }
 
   const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setContextMenu(null)
+      window.requestAnimationFrame(() => cellRef.current?.focus())
+      return
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const backwards = event.shiftKey
+      setContextMenu(null)
+      window.setTimeout(() => focusAdjacentInteractiveElement(cellRef.current, backwards), 0)
+      return
+    }
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
     const currentIndex = items.indexOf(document.activeElement as HTMLElement)
     let targetIndex = currentIndex
@@ -205,11 +220,12 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
 
       <div
         ref={cellRef}
-        onClick={onClick}
-        onDoubleClick={onDoubleClick}
+        onClick={isSupportedDate ? onClick : undefined}
+        onDoubleClick={isSupportedDate ? onDoubleClick : undefined}
         onWheel={handleCellWheel}
         onContextMenu={handleContextMenu}
         onKeyDown={(event) => {
+          if (!isSupportedDate) return
           if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
             event.preventDefault()
             const cells = [...document.querySelectorAll<HTMLElement>('[role="gridcell"]')]
@@ -219,10 +235,13 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
               : event.key === 'ArrowRight' ? currentIndex + 1
                 : event.key === 'ArrowUp' ? currentIndex - 7
                   : event.key === 'ArrowDown' ? currentIndex + 7
-                    : event.key === 'Home' ? rowStart
-                      : rowStart + 6
-            const target = cells[targetIndex]
-            if (target) {
+                    : event.key === 'Home'
+                      ? cells.findIndex((cell, index) => index >= rowStart && index < rowStart + 7 && cell.getAttribute('aria-disabled') !== 'true')
+                      : cells.reduce((last, cell, index) => (
+                          index >= rowStart && index < rowStart + 7 && cell.getAttribute('aria-disabled') !== 'true' ? index : last
+                        ), -1)
+            const target = targetIndex >= 0 ? cells[targetIndex] : null
+            if (target && target.getAttribute('aria-disabled') !== 'true') {
               target.focus()
               target.click()
             }
@@ -241,16 +260,19 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
           }
         }}
         role="gridcell"
-        tabIndex={isSelected ? 0 : -1}
-        aria-selected={isSelected}
-        aria-label={`${format(day, 'yyyy年M月d日')}${holiday ? `，${holiday}放假` : ''}${adjustedWorkday ? `，${adjustedWorkday}` : ''}，${events.length} 个事件${dailyTodoCount > 0 ? `，${dailyTodoCount} 个未完成待办` : ''}`}
+        tabIndex={isSupportedDate && isSelected ? 0 : -1}
+        aria-selected={isSupportedDate ? isSelected : undefined}
+        aria-disabled={!isSupportedDate || undefined}
+        aria-label={isSupportedDate
+          ? `${format(day, 'yyyy年M月d日')}${holiday ? `，${holiday}放假` : ''}${adjustedWorkday ? `，${adjustedWorkday}` : ''}，${events.length} 个事件${dailyTodoCount > 0 ? `，${dailyTodoCount} 个未完成待办` : ''}`
+          : `${format(day, 'yyyy年M月d日')}，超出支持范围，不可选择`}
         className={cn(
-          'relative transition-colors cursor-pointer group flex flex-col overflow-hidden',
-          'border hover:bg-accent/20',
+          'relative transition-colors group flex flex-col overflow-hidden border',
+          isSupportedDate ? 'cursor-pointer hover:bg-accent/20' : 'cursor-not-allowed opacity-[0.42]',
           isToday && 'bg-primary/6 border-primary/25',
           isSelected && !isToday && 'ring-1 ring-inset ring-primary/40 bg-primary/4',
           isSelected && isToday && 'ring-1 ring-inset ring-primary/40',
-          !isCurrentMonth && 'opacity-[0.42]',
+          !isCurrentMonth && isSupportedDate && 'opacity-[0.58]',
           compact ? 'p-0.5 gap-px' : 'p-1.5 min-h-[80px] gap-0.5',
         )}
         style={{
@@ -261,15 +283,14 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
         }}
       >
         {/* Day number + holiday name */}
-        <div className={cn('flex shrink-0 items-center gap-1 min-w-0', compact ? 'min-h-6' : 'h-7')}>
+        <div className={cn('flex flex-wrap shrink-0 items-center gap-x-1 gap-y-0.5 min-w-0', compact ? 'min-h-6' : 'min-h-7')}>
           <span
             className={cn(
               'calendar-day-number inline-flex items-center justify-center rounded-full shrink-0 font-semibold',
               'text-[0.85em]',
               isToday && 'bg-primary text-primary-foreground',
               isSelected && !isToday && 'bg-primary/25 text-primary',
-              !isToday && !isSelected && 'opacity-60',
-              !isCurrentMonth && 'opacity-[0.38]',
+              !isToday && !isSelected && isCurrentMonth && 'opacity-60',
               compact ? 'w-6 h-6' : 'w-7 h-7',
             )}
           >
@@ -290,20 +311,22 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
           {adjustedWorkday && (
             <span className="day-adjusted-workday shrink-0 rounded px-1 text-[0.7em] font-semibold" title={adjustedWorkday}>班</span>
           )}
-          {dailyTodoCount > 0 && (
+          {isSupportedDate && dailyTodoCount > 0 && (
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
                 window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办', activeDate: dateStr })
               }}
+              onKeyDown={(event) => event.stopPropagation()}
               className={cn(
-                'daily-calendar-chip z-10 ml-auto flex shrink-0 items-center justify-center overflow-hidden whitespace-nowrap rounded-full border p-0 font-semibold leading-none',
-                compact ? 'h-6 min-h-6 w-6 min-w-6 text-[0.7em]' : 'h-7 min-h-7 w-7 min-w-7 text-[0.74em]'
+                'daily-calendar-chip z-10 ml-auto inline-flex shrink-0 items-center justify-center gap-0.5 whitespace-nowrap rounded px-1 font-semibold leading-none',
+                compact ? 'text-[0.7em]' : 'text-[0.74em]'
               )}
-              title={`${dateStr} 有 ${dailyTodoCount} 个未完成待办`}
+              title={`${dateStr} 有 ${dailyTodoCount} 个未完成待办（含未完成的循环事件），点击打开每日待办`}
               aria-label={`打开 ${dateStr} 的每日待办，共 ${dailyTodoCount} 个未完成项`}
             >
+              <ListTodo className="calendar-todo-icon" aria-hidden="true" />
               <span className="daily-calendar-chip-count tabular-nums">{dailyTodoCount}</span>
             </button>
           )}
@@ -311,7 +334,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
 
         {/* Event badges - scrollable container */}
         <div ref={eventListRef} className={cn('day-event-list flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-px', compact ? 'mt-px' : 'mt-0.5')}>
-          {dailyTodos.map((todo) => (
+          {isSupportedDate && dailyTodos.map((todo) => (
             <button
               key={`todo-${todo.noteId}-${todo.id}`}
               type="button"
@@ -319,14 +342,16 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
                 event.stopPropagation()
                 window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办', activeDate: dateStr })
               }}
-              className="calendar-todo-preview flex min-h-5 w-full min-w-0 items-center rounded-sm px-1 text-left text-[0.76em] font-medium leading-tight transition-opacity hover:opacity-80"
+              onKeyDown={(event) => event.stopPropagation()}
+              className="calendar-todo-preview flex min-h-5 w-full min-w-0 items-center gap-1 rounded-sm px-1 text-left text-[0.76em] font-medium leading-tight transition-colors"
               title={`待办：${todo.content}`}
               aria-label={`打开待办：${todo.content}`}
             >
+              <ListTodo className="calendar-todo-icon" aria-hidden="true" />
               <span className="truncate">{todo.content}</span>
             </button>
           ))}
-          {events.map((event) => {
+          {isSupportedDate && events.map((event) => {
             const eventKey = getEventInstanceKey(event)
             const hasEndDate = event.endDate && event.endDate !== event.startDate
             const isMultiStart = hasEndDate && dateStr === event.startDate

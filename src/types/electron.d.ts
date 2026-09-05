@@ -65,6 +65,20 @@ export interface NoteSummary {
   noteType: 'independent' | 'echo' | 'view' | 'daily';
 }
 
+export interface TagsState {
+  tags: unknown[];
+  loadError?: string;
+  readOnlyDataAvailable?: boolean;
+}
+
+export interface TagMutationResult {
+  ok: boolean;
+  canceled?: boolean;
+  loadError?: string;
+  message?: string;
+  tag?: unknown;
+}
+
 export type EventMutationRequest =
   | { type: 'create' | 'update'; event: unknown; expectedRevision?: number; expectedUpdatedAt?: string }
   | { type: 'delete'; id: string; expectedRevision?: number; expectedUpdatedAt?: string };
@@ -94,7 +108,7 @@ export interface ElectronAPI {
   listDeletedNotes: () => Promise<Array<{ trashId: string; noteId: string; title: string; color: string; deletedAt: string }>>;
   restoreDeletedNote: (trashId: string) => Promise<{ ok: boolean; noteId?: string; message?: string }>;
   permanentlyDeleteNote: (trashId: string) => Promise<{ ok: boolean; trashId?: string; message?: string }>;
-  showNote: (noteId: string) => void;
+  showNote: (noteId: string) => Promise<{ ok: boolean; note?: unknown; message?: string }>;
   openSettings: () => void;
   tidyNotes: () => void;
   dismissReminderToast: () => void;
@@ -119,9 +133,9 @@ export interface ElectronAPI {
   mutateEvent: (request: EventMutationRequest) => Promise<EventMutationResult>;
 
   // Tags
-  getTags: () => Promise<unknown[]>;
-  saveTag: (tag: unknown) => Promise<boolean>;
-  deleteTag: (tagId: string) => Promise<{ ok: boolean; canceled?: boolean; message?: string }>;
+  getTags: () => Promise<TagsState>;
+  saveTag: (tag: unknown) => Promise<TagMutationResult>;
+  deleteTag: (tagId: string) => Promise<TagMutationResult>;
 
   // Event sync
   notifyEventsChanged: () => void;

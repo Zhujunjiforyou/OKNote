@@ -5,7 +5,17 @@ import { TodoItem } from '@/components/notes/TodoItem'
 import { useNotesStore } from '@/stores/notes.store'
 import { useCalendarStore } from '@/stores/calendar.store'
 import type { CalendarEvent } from '@/types/calendar.types'
-import { addDaysToDateKey, filterEventsByDate, getEventInstanceKey, normalizeCalendarEvents, normalizeHexColor } from '@/lib/utils'
+import {
+  addDaysToDateKey,
+  filterEventsByDate,
+  getEventInstanceKey,
+  isDateKey,
+  isImeComposing,
+  MAX_SUPPORTED_DATE_KEY,
+  MIN_SUPPORTED_DATE_KEY,
+  normalizeCalendarEvents,
+  normalizeHexColor,
+} from '@/lib/utils'
 import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
 
@@ -42,22 +52,14 @@ function sortItems<T extends { sortOrder: number; createdAt?: string }>(items: T
   return [...items].sort((a, b) => a.sortOrder - b.sortOrder)
 }
 
-function isDateKey(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const [year, month, day] = value.split('-').map(Number)
-  const date = new Date(0)
-  date.setHours(0, 0, 0, 0)
-  date.setFullYear(year, month - 1, day)
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
-}
-
 export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, textColor, mutedColor, lightBg, onDraftChange }: DailyTodoPanelProps) {
   const updateNote = useNotesStore((s) => s.updateNote)
   const addItem = useNotesStore((s) => s.addItem)
   const events = useCalendarStore((s) => s.events)
   const loadEvents = useCalendarStore((s) => s.loadEvents)
   const today = useCurrentDateKey()
-  const savedActiveDate = note.dailyTodo?.activeDate
+  const configuredActiveDate = note.dailyTodo?.activeDate
+  const savedActiveDate = isDateKey(configuredActiveDate) ? configuredActiveDate : undefined
   const [activeDate, setActiveDate] = useState(savedActiveDate || today)
   const [newTodo, setNewTodo] = useState('')
   const [itemDrafts, setItemDrafts] = useState<Record<string, true>>({})
@@ -200,7 +202,7 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
 
   const handleAddTodo = () => {
     const content = newTodo.trim()
-    if (!content) return
+    if (!content || !isDateKey(activeDate)) return
     addItem(note.id, content, { todoDate: activeDate })
     setNewTodo('')
   }
@@ -227,6 +229,8 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
   const completedCount = dailyItems.filter((item) => item.isCompleted).length + recurringCompletedCount
   const totalCount = dailyItems.length + recurringEvents.length
   const displayDate = formatDisplayDate(activeDate)
+  const canGoPrevious = activeDate > MIN_SUPPORTED_DATE_KEY
+  const canGoNext = activeDate < MAX_SUPPORTED_DATE_KEY
 
   const startEditDate = () => {
     setDateDraft(activeDate)
@@ -256,17 +260,23 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
         >
           <button
             onClick={() => { void switchDate(addDaysToDateKey(activeDate, -1)) }}
-            className="touch-target daily-nav-button h-auto w-6 rounded-md flex items-center justify-center opacity-60 hover:opacity-90"
-            title="前一天"
+            disabled={!canGoPrevious}
+            className="touch-target daily-nav-button h-auto w-6 rounded-md flex items-center justify-center opacity-60 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-25"
+            title={canGoPrevious ? '前一天' : '已到支持范围下限（1900-01-01）'}
+            aria-label={canGoPrevious ? '前一天' : '已到支持范围下限'}
           >
             <ChevronLeft size={compact ? 12 : 14} />
           </button>
           {editingDate ? (
             <input
+              type="date"
               value={dateDraft}
+              min={MIN_SUPPORTED_DATE_KEY}
+              max={MAX_SUPPORTED_DATE_KEY}
               onChange={(event) => setDateDraft(event.target.value)}
               onBlur={() => { void commitDateDraft() }}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return
                 if (event.key === 'Enter') void commitDateDraft()
                 if (event.key === 'Escape') {
                   setDateDraft(activeDate)
@@ -306,8 +316,10 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
           )}
           <button
             onClick={() => { void switchDate(addDaysToDateKey(activeDate, 1)) }}
-            className="touch-target daily-nav-button h-auto w-6 rounded-md flex items-center justify-center opacity-60 hover:opacity-90"
-            title="后一天"
+            disabled={!canGoNext}
+            className="touch-target daily-nav-button h-auto w-6 rounded-md flex items-center justify-center opacity-60 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-25"
+            title={canGoNext ? '后一天' : '已到支持范围上限（2100-12-31）'}
+            aria-label={canGoNext ? '后一天' : '已到支持范围上限'}
           >
             <ChevronRight size={compact ? 12 : 14} />
           </button>
@@ -418,7 +430,7 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
             value={newTodo}
             maxLength={2000}
             onChange={(e) => setNewTodo(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+            onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleAddTodo() }}
             placeholder={`${labelForDate(activeDate, today)}待办...`}
             aria-label={`${labelForDate(activeDate, today)}待办内容`}
             className="flex-1 bg-transparent text-[0.82em] outline-none placeholder:opacity-70"

@@ -53,4 +53,47 @@ describe('note persistence revisions', () => {
     expect(disk.title).toBe('窗口 A')
     expect(cache.get('note-1')?.title).toBe('窗口 A')
   })
+
+  it('does not advance the cache or visible revision when the disk write fails', () => {
+    const existing: Record<string, unknown> = { id: 'note-1', title: '已持久化', items: [], revision: 3 }
+    const cache = new Map<string, Record<string, unknown>>([['note-1', existing]])
+    const result = commitNoteSnapshot({
+      noteId: 'note-1',
+      existing,
+      snapshot: { ...existing, title: '不应显示' },
+      expectedRevision: 3,
+      write: () => false,
+      cache,
+    })
+
+    expect(result).toMatchObject({ ok: false, code: 'save_failed' })
+    expect(cache.get('note-1')).toEqual(existing)
+  })
+
+  it('lets a renderer edit immediately after a dock transition broadcasts the committed revision', () => {
+    const cache = new Map<string, Record<string, unknown>>()
+    let disk: Record<string, unknown> = { id: 'note-1', title: '挂载前', items: [], revision: 5 }
+    const write = (note: Record<string, unknown>) => { disk = note; return true }
+
+    const docked = commitNoteSnapshot({
+      noteId: 'note-1',
+      existing: disk,
+      snapshot: { ...disk, isDocked: true },
+      write,
+      cache,
+    })
+    expect(docked).toMatchObject({ ok: true, note: { revision: 6, isDocked: true } })
+
+    const immediateEdit = commitNoteSnapshot({
+      noteId: 'note-1',
+      existing: cache.get('note-1'),
+      snapshot: { ...docked.note, title: '挂载后立即编辑' },
+      expectedRevision: Number(docked.note?.revision),
+      write,
+      cache,
+    })
+
+    expect(immediateEdit).toMatchObject({ ok: true, note: { title: '挂载后立即编辑', revision: 7 } })
+    expect(disk).toEqual(immediateEdit.note)
+  })
 })

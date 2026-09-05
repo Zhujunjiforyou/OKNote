@@ -3,7 +3,7 @@ import type { Note } from '@/types/notes.types'
 import type { CalendarEvent } from '@/types/calendar.types'
 import { X } from 'lucide-react'
 import { useTagStore } from '@/stores/tag.store'
-import { generateId, getLocalDateKey, hexToLuminance, normalizeHexColor } from '@/lib/utils'
+import { generateId, getLocalDateKey, hexToLuminance, isImeComposing, normalizeHexColor } from '@/lib/utils'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 interface QuickEventFormProps {
@@ -123,7 +123,7 @@ export function QuickEventForm({ note, onClose, onSaved, surfaceColor, textColor
           className="min-h-8 w-full rounded px-2 py-1 text-[0.82em] outline-none placeholder:opacity-55"
           style={{ backgroundColor: inputBg, color: textColor, border: `1px solid ${borderColor}` }}
           autoFocus
-          onKeyDown={(e) => { if (e.key === 'Enter') handleSave() }}
+          onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleSave() }}
           aria-label="事件标题"
         />
 

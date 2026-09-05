@@ -1,6 +1,6 @@
 {
   "name": "oknote",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Windows desktop calendar, sticky-note and reminder application.",
   "author": "zhujunjiforyou",
   "homepage": "https://github.com/Zhujunjiforyou/OKNote",
@@ -22,6 +22,10 @@
     "lint": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "test:electron-smoke": "node scripts/electron-smoke.cjs",
+    "test:electron-e2e": "node scripts/electron-stability-e2e.cjs",
+    "test:electron-qa": "node scripts/electron-feature-qa.cjs",
+    "test:electron-upgrade": "node scripts/electron-legacy-upgrade-qa.cjs",
+    "test:installer-upgrade": "node scripts/installer-preservation-qa.cjs",
     "prepare:icon": "node scripts/create-app-icon.cjs",
     "preelectron:build": "node scripts/create-app-icon.cjs",
     "electron:dev": "cross-env NODE_ENV=development VITE_PORT=5199 concurrently --kill-others --kill-others-on-fail \"vite --port 5199 --strictPort\" \"wait-on http://localhost:5199 && electron . --dev\"",
@@ -79,6 +83,7 @@
       "icon": "build/icon.png"
     },
     "nsis": {
+      "include": "build/preserve-user-data.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

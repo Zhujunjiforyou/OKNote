@@ -592,9 +592,8 @@ html.electron-transparent #root {
 }
 
 .dock-main-strip {
-  transform: translateZ(28px);
-  transform-style: preserve-3d;
-  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Keep readable cards at their layout size; depth belongs to the side previews. */
+  transform-style: flat;
 }
 
 .dock-carousel-stage {
@@ -1049,28 +1048,45 @@ html.electron-transparent #root {
 }
 
 .daily-calendar-chip {
-  max-width: none;
-  color: color-mix(in srgb, var(--calendar-text) 88%, #16a34a 12%);
-  background:
-    linear-gradient(90deg, rgba(34,197,94,0.30), rgba(34,197,94,0.14));
-  border-color: rgba(34,197,94,0.52);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.18),
-    0 0 0 1px rgba(34,197,94,0.12);
+  position: relative;
+  isolation: isolate;
+  min-height: 24px;
+  color: var(--calendar-text);
   text-shadow: none;
 }
 
-.daily-calendar-chip span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.daily-calendar-chip::before {
+  content: "";
+  position: absolute;
+  inset: 4px 0;
+  z-index: -1;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--calendar-text) 6%, transparent);
+}
+
+.calendar-todo-icon {
+  width: 1em;
+  height: 1em;
+  min-width: 11px;
+  min-height: 11px;
+  flex-shrink: 0;
 }
 
 .calendar-todo-preview {
-  color: color-mix(in srgb, var(--calendar-text) 88%, #15803d 12%);
-  border: 1px solid rgba(34, 197, 94, 0.42);
-  background: rgba(34, 197, 94, 0.14);
+  color: var(--calendar-text);
+  background: color-mix(in srgb, var(--calendar-text) 4%, transparent);
   text-shadow: none;
+}
+
+.calendar-todo-preview:hover,
+.daily-calendar-chip:hover::before {
+  background: color-mix(in srgb, var(--calendar-text) 12%, transparent);
+}
+
+.calendar-todo-preview:focus-visible,
+.daily-calendar-chip:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
 }
 
 .calendar-event-time {
@@ -1391,20 +1407,6 @@ html.electron-transparent #root {
   padding-block: 1px !important;
 }
 
-.calendar-type-xlarge .daily-calendar-chip,
-.calendar-viewport-narrow .daily-calendar-chip {
-  width: 24px !important;
-  min-width: 24px !important;
-  height: 24px !important;
-  min-height: 24px;
-  padding: 0;
-}
-
-.calendar-type-xlarge .daily-calendar-chip-label,
-.calendar-viewport-narrow .daily-calendar-chip-label {
-  display: none;
-}
-
 .calendar-type-xlarge .view-note-panel {
   width: clamp(210px, 34vw, 380px);
 }
@@ -1426,23 +1428,6 @@ html.electron-transparent #root {
 }
 
 .calendar-viewport-narrow.calendar-type-xlarge .view-event-count {
-  display: none;
-}
-
-.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip {
-  width: 24px !important;
-  min-width: 24px;
-  max-width: 24px;
-  height: 24px !important;
-  min-height: 24px;
-  padding: 0;
-}
-
-.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip > * {
-  display: inline;
-}
-
-.calendar-viewport-narrow.calendar-type-xlarge .daily-calendar-chip::after {
   display: none;
 }
 
@@ -1472,8 +1457,7 @@ html.electron-transparent #root {
   min-height: var(--calendar-grid-min-height);
 }
 
-.calendar-type-max .calendar-day-number,
-.calendar-type-max .daily-calendar-chip {
+.calendar-type-max .calendar-day-number {
   width: max(24px, 0.9em) !important;
   min-width: max(24px, 0.9em) !important;
   height: max(24px, 0.9em) !important;
@@ -1524,6 +1508,33 @@ html.electron-transparent #root {
 
 .calendar-date-picker {
   text-shadow: none;
+  max-height: calc(100vh - 52px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
+
+@supports (height: 100dvh) {
+  .calendar-date-picker {
+    max-height: calc(100dvh - 52px);
+  }
+}
+
+.calendar-date-picker::-webkit-scrollbar {
+  width: 5px;
+}
+
+.calendar-date-picker::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.calendar-date-picker::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .calendar-year-input {

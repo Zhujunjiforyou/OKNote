@@ -1,6 +1,4 @@
-function isPlainRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+const { isPlainRecord } = require('./data-rules.cjs');
 
 function getNoteRevision(note) {
   return isPlainRecord(note) && Number.isInteger(note.revision) && note.revision >= 0

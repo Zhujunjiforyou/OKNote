@@ -4,7 +4,7 @@ import { zhCN } from 'date-fns/locale'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import { useTagStore } from '@/stores/tag.store'
-import { Clock, Repeat } from 'lucide-react'
+import { Clock, ListTodo, Repeat } from 'lucide-react'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import { buildDailyTodoItemsByDate, filterEventsByDate, getEventInstanceKey, isLightColor } from '@/lib/utils'
 
@@ -212,9 +212,8 @@ export function ViewNotePanel() {
                 }}
                 title={`打开每日待办：${todo.content}`}
               >
-                <span
-                  className="h-2 w-2 shrink-0 rounded-sm"
-                  style={{ backgroundColor: lightBg ? '#16a34a' : '#4ade80' }}
+                <ListTodo
+                  className="calendar-todo-icon"
                   aria-hidden="true"
                 />
                 <span className="min-w-0">

@@ -15,10 +15,10 @@ import { EventDetailModal } from '@/components/calendar/EventDetailModal'
 import { DayEventsModal } from '@/components/calendar/DayEventsModal'
 import { DockArea } from '@/components/dock/DockArea'
 import type { DockedNoteDraftKind } from '@/components/dock/DockedNoteCard'
-import { ensureReadableTextColor, isLightColor, normalizeCalendarEvent, normalizeCalendarEvents, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { ensureReadableTextColor, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeCalendarEvent, normalizeCalendarEvents, normalizeHexColor, normalizeNote } from '@/lib/utils'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
-import { ReminderCenter, type ReminderHistoryEntry } from '@/components/calendar/ReminderCenter'
+import { ReminderCenter, normalizeReminderHistoryEntries, type ReminderHistoryEntry } from '@/components/calendar/ReminderCenter'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
 import type { WindowDraftEntry, WindowDraftKind } from '@/types/electron'
 
@@ -131,6 +131,7 @@ export function CalendarWindow() {
   const [showPicker, setShowPicker] = useState(false)
   const pickerDialogRef = useDialogFocusTrap(showPicker)
   const [pickerYearInput, setPickerYearInput] = useState(() => String(new Date().getFullYear()))
+  const [pickerYearError, setPickerYearError] = useState('')
   const [showNoteCreateMenu, setShowNoteCreateMenu] = useState(false)
   const [showOverflowMenu, setShowOverflowMenu] = useState(false)
   const [showReminderCenter, setShowReminderCenter] = useState(false)
@@ -279,11 +280,11 @@ export function CalendarWindow() {
     if (!window.electronAPI?.isElectron) return
     let cancelled = false
     window.electronAPI.getReminderHistory().then((history) => {
-      if (!cancelled) setReminderHistory(history)
+      if (!cancelled) setReminderHistory(normalizeReminderHistoryEntries(history))
     }).catch((error) => {
       reportPersistenceIssue('提醒记录读取失败', error instanceof Error ? error.message : '无法读取提醒记录。')
     })
-    const unsubscribe = window.electronAPI.onReminderHistoryChanged((history) => setReminderHistory(history))
+    const unsubscribe = window.electronAPI.onReminderHistoryChanged((history) => setReminderHistory(normalizeReminderHistoryEntries(history)))
     return () => {
       cancelled = true
       unsubscribe()
@@ -325,6 +326,13 @@ export function CalendarWindow() {
       event.preventDefault()
       close()
       window.requestAnimationFrame(() => trigger.current?.focus())
+      return
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const backwards = event.shiftKey
+      close()
+      window.setTimeout(() => focusAdjacentInteractiveElement(trigger.current, backwards), 0)
       return
     }
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
@@ -449,9 +457,7 @@ export function CalendarWindow() {
       const unsub4 = window.electronAPI.onTagsChanged(() => {
         // Reload tags from disk (e.g. after creating/editing tags in settings)
         window.electronAPI!.getTags().then((data) => {
-          if (Array.isArray(data)) {
-            useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
-          }
+          useTagStore.getState().loadTagsState(data)
         }).catch((error) => reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法刷新标签。'))
       })
       const unsub5 = window.electronAPI.onNotesChanged((payload) => {
@@ -528,9 +534,7 @@ export function CalendarWindow() {
       }),
       window.electronAPI.getTags().then((data) => {
         if (cancelled) return
-        if (Array.isArray(data)) {
-          useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
-        }
+        useTagStore.getState().loadTagsState(data)
       }),
     ]).then((results) => {
       if (cancelled) return
@@ -582,7 +586,23 @@ export function CalendarWindow() {
     ? 'rgba(180, 30, 30, 0.85)'
     : 'rgba(255, 140, 140, 0.85)'
   const eventTextColor = calendarTextColor
+  const canNavigate = (direction: -1 | 1) => {
+    const target = new Date(currentDate)
+    if (effectiveViewMode === 'month') {
+      target.setDate(1)
+      target.setMonth(target.getMonth() + direction)
+      return target.getFullYear() >= MIN_SUPPORTED_YEAR && target.getFullYear() <= MAX_SUPPORTED_YEAR
+    }
+    target.setDate(target.getDate() + direction * 7)
+    const targetWeekStart = startOfWeek(target, { weekStartsOn: 1 })
+    const targetWeekEnd = endOfWeek(target, { weekStartsOn: 1 })
+    return targetWeekEnd >= new Date(MIN_SUPPORTED_YEAR, 0, 1)
+      && targetWeekStart <= new Date(MAX_SUPPORTED_YEAR, 11, 31)
+  }
+  const canGoPrev = canNavigate(-1)
+  const canGoNext = canNavigate(1)
   const handlePrev = () => {
+    if (!canGoPrev) return
     if (effectiveViewMode === 'month') {
       goPrevMonth()
       return
@@ -592,6 +612,7 @@ export function CalendarWindow() {
     useCalendarStore.getState().setCurrentDate(next)
   }
   const handleNext = () => {
+    if (!canGoNext) return
     if (effectiveViewMode === 'month') {
       goNextMonth()
       return
@@ -610,20 +631,26 @@ export function CalendarWindow() {
     next.setFullYear(nextYear)
     useCalendarStore.getState().setCurrentDate(next)
     setPickerYearInput(String(nextYear))
+    setPickerYearError('')
     if (closePicker) setShowPicker(false)
   }
   const commitPickerYear = () => {
     const nextYear = readPickerYear()
     if (nextYear === null) {
-      setPickerYearInput(String(year))
+      setPickerYearError(`请输入 ${MIN_SUPPORTED_YEAR}–${MAX_SUPPORTED_YEAR} 之间的四位年份`)
       return
     }
     goToPickerYear(nextYear)
   }
   const goToPickerMonth = (nextMonth: number) => {
+    const nextYear = readPickerYear()
+    if (nextYear === null) {
+      setPickerYearError(`请输入 ${MIN_SUPPORTED_YEAR}–${MAX_SUPPORTED_YEAR} 之间的四位年份`)
+      return
+    }
     const next = new Date(currentDate)
     next.setDate(1)
-    next.setFullYear(readPickerYear() ?? year)
+    next.setFullYear(nextYear)
     next.setMonth(nextMonth - 1)
     useCalendarStore.getState().setCurrentDate(next)
     setShowPicker(false)
@@ -963,9 +990,11 @@ export function CalendarWindow() {
         >
           <button
             onClick={handlePrev}
-            className="cal-chevron-left w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all"
+            disabled={!canGoPrev}
+            className="cal-chevron-left w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:bg-transparent"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             aria-label={effectiveViewMode === 'month' ? '上一个月' : '上一周'}
+            title={!canGoPrev ? '已到支持范围下限（1900年）' : undefined}
           >
             <ChevronLeft size={17} />
           </button>
@@ -984,9 +1013,11 @@ export function CalendarWindow() {
           </button>
           <button
             onClick={handleNext}
-            className="cal-chevron-right w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all"
+            disabled={!canGoNext}
+            className="cal-chevron-right w-8 h-8 rounded-lg flex items-center justify-center opacity-50 hover:opacity-90 hover:bg-white/5 transition-all disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:bg-transparent"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             aria-label={effectiveViewMode === 'month' ? '下一个月' : '下一周'}
+            title={!canGoNext ? '已到支持范围上限（2100年）' : undefined}
           >
             <ChevronRight size={17} />
           </button>
@@ -1023,12 +1054,16 @@ export function CalendarWindow() {
                       minLength={4}
                       maxLength={4}
                       value={pickerYearInput}
-                      onChange={(event) => setPickerYearInput(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                      onChange={(event) => {
+                        setPickerYearInput(event.target.value.replace(/\D/g, '').slice(0, 4))
+                        setPickerYearError('')
+                      }}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') commitPickerYear()
+                        if (!isImeComposing(event) && event.key === 'Enter') commitPickerYear()
                       }}
                       aria-label="年份"
-                      aria-describedby="calendar-year-range"
+                      aria-describedby={pickerYearError ? 'calendar-year-error calendar-year-range' : 'calendar-year-range'}
+                      aria-invalid={pickerYearError ? 'true' : undefined}
                       className="calendar-year-input w-full rounded-lg border px-3 py-2 text-center text-base font-semibold tabular-nums outline-none transition-colors focus:border-primary/60"
                       style={{ borderColor: `${calendarTextColor}20`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                     />
@@ -1041,6 +1076,7 @@ export function CalendarWindow() {
                     定位
                   </button>
                 </div>
+                {pickerYearError && <p id="calendar-year-error" role="alert" className="-mt-2 mb-3 text-center text-[11px] text-red-500">{pickerYearError}</p>}
                 <p id="calendar-year-range" className="-mt-2 mb-3 text-center text-[11px] opacity-55">支持 1900–2100 年的农历与节假日显示</p>
                 <div className="mb-3">
                   <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold opacity-60">
@@ -1056,6 +1092,8 @@ export function CalendarWindow() {
                     onPointerCancel={finishYearStripDrag}
                     onWheel={(event) => {
                       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+                      const dialog = pickerDialogRef.current
+                      if (dialog && dialog.scrollHeight > dialog.clientHeight) return
                       event.preventDefault()
                       event.currentTarget.scrollLeft += event.deltaY
                     }}

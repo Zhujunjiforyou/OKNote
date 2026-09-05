@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
+  ...(process.env.OKNOTE_E2E_TEST === '1'
+    ? { finishIsolatedTest: () => ipcRenderer.invoke('__finish-isolated-test') }
+    : {}),
 
   // ── Settings ──
   getSettings: () => ipcRenderer.invoke('get-settings'),
@@ -42,7 +45,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listDeletedNotes: () => ipcRenderer.invoke('list-deleted-notes'),
   restoreDeletedNote: (trashId) => ipcRenderer.invoke('restore-deleted-note', trashId),
   permanentlyDeleteNote: (trashId) => ipcRenderer.invoke('permanently-delete-note', trashId),
-  showNote: (noteId) => ipcRenderer.send('show-note', noteId),
+  showNote: (noteId) => ipcRenderer.invoke('show-note', noteId),
   openSettings: () => ipcRenderer.send('open-settings'),
   tidyNotes: () => ipcRenderer.send('tidy-notes'),
   dismissReminderToast: () => ipcRenderer.send('dismiss-reminder-toast'),

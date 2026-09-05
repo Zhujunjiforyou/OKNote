@@ -46,8 +46,11 @@ describe('critical Electron workflow wiring', () => {
   const dailyTodoSource = readFileSync(join(process.cwd(), 'src', 'components', 'notes', 'DailyTodoPanel.tsx'), 'utf8')
   const todoItemSource = readFileSync(join(process.cwd(), 'src', 'components', 'notes', 'TodoItem.tsx'), 'utf8')
   const noteWindowSource = readFileSync(join(process.cwd(), 'src', 'components', 'windows', 'NoteWindow.tsx'), 'utf8')
+  const quickEventSource = readFileSync(join(process.cwd(), 'src', 'components', 'notes', 'QuickEventForm.tsx'), 'utf8')
   const notesStoreSource = readFileSync(join(process.cwd(), 'src', 'stores', 'notes.store.ts'), 'utf8')
   const tagStoreSource = readFileSync(join(process.cwd(), 'src', 'stores', 'tag.store.ts'), 'utf8')
+  const reminderDataSource = readFileSync(join(process.cwd(), 'electron', 'reminder-data.cjs'), 'utf8')
+  const utilsSource = readFileSync(join(process.cwd(), 'src', 'lib', 'utils.ts'), 'utf8')
   const readmeSource = readFileSync(join(process.cwd(), 'README.md'), 'utf8')
   const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
     engines?: { node?: string }
@@ -57,8 +60,7 @@ describe('critical Electron workflow wiring', () => {
   it('keeps persistence local, plain and intentionally small', () => {
     expect(jsonStoreSource).toContain('writeFileAtomic')
     expect(jsonStoreSource).toContain('`${filePath}.bak`')
-    expect(mainSource).toContain('copyMissingRecursive')
-    expect(mainSource).toContain('if (fs.existsSync(destination)) return')
+    expect(mainSource).toContain("require('./user-data-migration.cjs')")
     for (const removedScope of [
       'safeStorage',
       'portable-backup',
@@ -87,6 +89,35 @@ describe('critical Electron workflow wiring', () => {
     expect(notesStoreSource).toContain("result.code === 'conflict'")
     expect(mainSource).toContain('if (reportFailure) reportDataReadFailure(fileName, e)')
     expect(mainSource).toContain('应用没有用空数据覆盖')
+    expect(mainSource).toContain('validate: dataDocumentValidator(fileName)')
+    expect(mainSource).toContain('canonicalNoteFileNames')
+    expect(mainSource).toContain('appDataLoadErrors.has(fileName)')
+    expect(jsonStoreSource).toContain("reason: primaryExists ? 'invalid-primary' : 'missing-primary'")
+    expect(noteWindowSource).not.toContain('创建空白便签')
+  })
+
+  it('broadcasts committed note revisions and makes visibility changes result-based', () => {
+    expect(mainSource).toContain('const persisted=saveResult.note')
+    expect(mainSource).toContain('notifyNotesChanged({note:persisted})')
+    expect(mainSource).toContain("ipcMain.handle('show-note'")
+    expect(preloadSource).toContain("showNote: (noteId) => ipcRenderer.invoke('show-note', noteId)")
+    expect(settingsWindowSource).toContain('if (!result?.ok)')
+  })
+
+  it('keeps damaged tags read-only and normalizes reminder inputs independently', () => {
+    expect(mainSource).toContain('const state=loadTagsState()')
+    expect(mainSource).toContain('if(state.loadError) return {ok:false,loadError:state.loadError')
+    expect(mainSource).not.toContain("loadAppData('tags.json')||[]")
+    expect(tagStoreSource).toContain('tagsLoadError')
+    expect(reminderDataSource).toContain('normalizeReminderHistory')
+    expect(reminderDataSource).toContain('normalizeReminderEvents')
+    expect(mainSource).toContain('const normalized = normalizeReminderEvents(storedEvents)')
+  })
+
+  it('guards every text-entry Enter shortcut during IME composition', () => {
+    for (const source of [eventFormSource, noteWindowSource, dockedCardSource, dailyTodoSource, todoItemSource, quickEventSource]) {
+      expect(source).toContain('isImeComposing')
+    }
   })
 
   it('keeps event entries keyboard reachable and documents the real packaging runtime', () => {
@@ -110,12 +141,27 @@ describe('critical Electron workflow wiring', () => {
     expect(preloadSource).toContain('set-window-draft-state')
     expect(mainSource).toContain('attachDraftCloseGuard(win)')
     expect(mainSource).toContain("confirmDiscardWindowDrafts(drag.win,'挂载')")
+    expect(mainSource).toContain("confirmDiscardWindowDrafts(win,'隐藏')")
     expect(mainSource).toContain("confirmDiscardNoteDrafts([noteId],'移入回收站'")
     expect(mainSource).toContain("'todo-edit', 'date-edit', 'tag-form'")
     expect(dailyTodoSource).toContain("'daily-date', 'date-edit'")
     expect(todoItemSource).toContain('onDraftChange?.(item.id, dirty)')
     expect(settingsWindowSource).toContain("setWindowDraftState(tagFormDirty ? ['tag-form'] : [])")
     expect(settingsWindowSource).toContain("if (event.key !== 'Escape') return")
+    expect(noteWindowSource).not.toContain('discard-quick-hide')
+    expect(noteWindowSource).toContain('onPointerDown={(event) => event.preventDefault()}')
+  })
+
+  it('moves focus past closed menus and exposes supported date boundaries', () => {
+    expect(utilsSource).toContain('focusAdjacentInteractiveElement')
+    for (const source of [calendarWindowSource, noteWindowSource, dockedCardSource, dayCellSource]) {
+      expect(source).toContain('focusAdjacentInteractiveElement')
+    }
+    expect(calendarWindowSource).toContain('disabled={!canGoNext}')
+    expect(calendarWindowSource).toContain('disabled={!canGoPrev}')
+    expect(dayCellSource).toContain('aria-disabled={!isSupportedDate || undefined}')
+    expect(dayCellSource).toContain("isCurrentMonth && 'opacity-60'")
+    expect(dayCellSource).not.toContain("isCurrentMonth ? 'opacity-60' : 'opacity-75'")
   })
 
   it('retains dock drafts across responsive and carousel unmount paths', () => {
@@ -153,9 +199,10 @@ describe('critical Electron workflow wiring', () => {
     expect(dailyTodoSource).toContain('aria-label="每日待办日期"')
   })
 
-  it('stops edge polling away from an edge and covers the reminder catch-up horizon', () => {
+  it('stops edge polling away from an edge and narrows reminder work to the due window', () => {
     expect(mainSource).toMatch(/if\(!nearEdge&&!isCalendarCollapsed\)\{[\s\S]*?stopEdgePolling\(\)/)
-    expect(mainSource).toContain('Math.ceil(REMINDER_MAX_CATCH_UP_MS / DAY_MS) + 370')
+    expect(mainSource).toContain('expandReminderEventsForDueWindow(events, catchUpStartMs, nowMs)')
+    expect(mainSource).not.toContain('Math.ceil(maxBefore / 1440)')
   })
 
   it('keeps tiny-window event actions visible and isolates each build version', () => {
@@ -170,7 +217,6 @@ describe('critical Electron workflow wiring', () => {
     expect(eventDetailSource).toContain('编辑整个系列')
     expect(eventFormSource).toContain('(isMultiDay || !isAllDay)')
     expect(eventFormSource).toContain('设置提醒前，请先选择开始时间')
-    expect(mainSource).toContain('if (reminder && (next.isAllDay || startTime))')
     expect(mainSource).not.toContain("event.startTime || '09:00'")
     expect(echoEventListSource).not.toContain('addDaysToDateKey(today, -90)')
   })

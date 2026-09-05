@@ -8,7 +8,7 @@ import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
 import { useAppSettings } from '@/hooks/useAppSettings'
-import { NOTE_COLOR_PALETTE, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { NOTE_COLOR_PALETTE, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeHexColor, normalizeNote } from '@/lib/utils'
 import type { Note } from '@/types/notes.types'
 import type { EventTag } from '@/types/tag.types'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
@@ -51,7 +51,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [loadError, setLoadError] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
-  const [confirmAction, setConfirmAction] = useState<'replace-corrupt' | 'delete' | 'discard-quick-hide' | null>(null)
+  const [confirmAction, setConfirmAction] = useState<'delete' | null>(null)
 
   useEffect(() => {
     if (!loaded) return
@@ -116,7 +116,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const [isDockTargetPreview, setIsDockTargetPreview] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
   const tags = useTagStore((s) => s.tags)
-  const loadTags = useTagStore((s) => s.loadTags)
+  const loadTagsState = useTagStore((s) => s.loadTagsState)
   const menuBtnRef = useRef<HTMLButtonElement>(null)
   const windowDragRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean } | null>(null)
   const windowDragMoveFrameRef = useRef<number | null>(null)
@@ -153,6 +153,13 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
       window.requestAnimationFrame(() => menuBtnRef.current?.focus())
       return
     }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const backwards = event.shiftKey
+      setShowMenu(false)
+      window.setTimeout(() => focusAdjacentInteractiveElement(menuBtnRef.current, backwards), 0)
+      return
+    }
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
     const currentIndex = items.indexOf(document.activeElement as HTMLElement)
     let targetIndex = currentIndex
@@ -168,7 +175,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
     const reloadTags = () => window.electronAPI!.getTags().then((data) => {
-      if (Array.isArray(data)) loadTags(data as import('@/types/tag.types').EventTag[])
+      loadTagsState(data)
     }).catch((error) => {
       reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法刷新标签。', reloadTags)
     })
@@ -176,7 +183,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
     return window.electronAPI.onTagsChanged(() => {
       void reloadTags()
     })
-  }, [loadTags])
+  }, [loadTagsState])
 
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
@@ -226,29 +233,10 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
               <button type="button" onClick={() => setLoadAttempt((value) => value + 1)} className="min-h-9 rounded-lg bg-blue-500 px-3 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
                 重新读取
               </button>
-              <button
-                type="button"
-                onClick={() => setConfirmAction('replace-corrupt')}
-                className="min-h-9 rounded-lg bg-white/10 px-3 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300"
-              >
-                创建空白便签
-              </button>
               <button type="button" onClick={() => window.electronAPI?.closeWindow()} className="min-h-9 rounded-lg px-3 text-sm text-slate-300 hover:bg-white/8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300">
                 关闭窗口
               </button>
             </div>
-            <ConfirmDialog
-              open={confirmAction === 'replace-corrupt'}
-              title="创建空白便签？"
-              description="这会替换当前无法读取的主文件；现有备份仍会保留，方便后续人工恢复。"
-              confirmLabel="创建空白便签"
-              destructive
-              onCancel={() => setConfirmAction(null)}
-              onConfirm={() => {
-                setConfirmAction(null)
-                addNote(createDefaultNote(noteId))
-              }}
-            />
           </div>
         </div>
       )
@@ -285,18 +273,12 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
 
   const performHide = async () => {
     if (isHiding || !window.electronAPI?.isElectron) return
-    if (!isDaily && newTodo.trim()) {
-      addItem(note.id, newTodo.trim())
-      setNewTodo('')
-    }
-    let snapshot = useNotesStore.getState().notes.find((item) => item.id === note.id) || note
-    if (editingTitle && titleDraft.trim()) {
-      snapshot = { ...snapshot, title: titleDraft.trim().slice(0, 200), updatedAt: new Date().toISOString() }
-    }
+    const snapshot = useNotesStore.getState().notes.find((item) => item.id === note.id) || note
     setIsHiding(true)
     try {
       const result = await window.electronAPI.hideNote(snapshot)
       if (!result.ok) {
+        if (result.canceled) return
         reportPersistenceIssue(
           '便签保持打开',
           result.message || '当前内容未能完整写入磁盘，已取消隐藏。',
@@ -315,10 +297,6 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   }
 
   const handleHide = async () => {
-    if (showQuickEventForm && quickEventDirty) {
-      setConfirmAction('discard-quick-hide')
-      return
-    }
     await performHide()
   }
 
@@ -473,7 +451,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
               maxLength={200}
               onChange={(e) => setTitleDraft(e.target.value)}
               onBlur={saveTitle}
-              onKeyDown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
+              onKeyDown={(e) => { if (isImeComposing(e)) return; if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
               className="note-window-title flex-1 bg-white/5 rounded px-1.5 py-0.5 text-[1em] font-semibold outline-none min-w-0"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               aria-label={`编辑${isEcho ? '标签视图便签' : isDaily ? '每日待办' : '独立便签'}标题`}
@@ -483,10 +461,15 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
           ) : (
             <span
               onClick={startEditTitle}
-              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === 'F2') startEditTitle() }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') {
+                  event.preventDefault()
+                  startEditTitle()
+                }
+              }}
               className="note-window-title text-[1em] font-semibold tracking-wide truncate cursor-text hover:opacity-70 transition-opacity"
               style={{ WebkitAppRegion: 'no-drag', color: noteTextColor } as React.CSSProperties}
-              title="点击编辑标题"
+              title="点击、空格、Enter 或 F2 编辑标题"
               data-no-window-drag
               role="button"
               tabIndex={0}
@@ -591,6 +574,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
             <Settings size={11} />
           </button>
           <button
+            onPointerDown={(event) => event.preventDefault()}
             onClick={() => { void handleHide() }}
             disabled={isHiding}
             className="w-7 h-7 rounded-md flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-white/10 hover:text-red-500 transition-all"
@@ -700,7 +684,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
               value={newTodo}
               maxLength={2000}
               onChange={(e) => setNewTodo(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo() }}
+              onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleAddTodo() }}
               onBlur={handleAddTodo}
               placeholder="添加待办..."
               className="min-w-0 flex-1 bg-transparent text-[0.85em] outline-none placeholder:opacity-70"
@@ -712,22 +696,13 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
         </div>
       ) : null}
       <ConfirmDialog
-        open={confirmAction === 'delete' || confirmAction === 'discard-quick-hide'}
-        title={confirmAction === 'discard-quick-hide' ? '放弃未保存的事件并隐藏？' : '将便签移入回收站？'}
-        description={confirmAction === 'discard-quick-hide'
-          ? '快速事件表单已有内容。继续后会放弃本次输入，再隐藏便签。'
-          : `“${note.title}”会从桌面移除，可稍后在设置的“便签管理”中恢复。`}
-        confirmLabel={confirmAction === 'discard-quick-hide' ? '放弃并隐藏' : '移入回收站'}
+        open={confirmAction === 'delete'}
+        title="将便签移入回收站？"
+        description={`“${note.title}”会从桌面移除，可稍后在设置的“便签管理”中恢复。`}
+        confirmLabel="移入回收站"
         destructive
         onCancel={() => setConfirmAction(null)}
         onConfirm={() => {
-          if (confirmAction === 'discard-quick-hide') {
-            setShowQuickEventForm(false)
-            setQuickEventDirty(false)
-            setConfirmAction(null)
-            window.requestAnimationFrame(() => { void performHide() })
-            return
-          }
           setConfirmAction(null)
           deleteNote(note.id)
         }}

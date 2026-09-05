@@ -1,10 +1,14 @@
-import { useState, useEffect, useId, useMemo, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { X, Sun, Moon, Globe, CalendarDays, StickyNote, ListTodo, Trash2, Eye, EyeOff, Tag, RotateCcw } from 'lucide-react'
-import { APP_COLOR_PALETTE, contrastRatio, ensureReadableTextColor, generateId, isLightColor } from '@/lib/utils'
+import { APP_COLOR_PALETTE, generateId, isImeComposing } from '@/lib/utils'
 import { useTagStore } from '@/stores/tag.store'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { FONT_SIZE_MAX, FONT_SIZE_MIN, clampFontSize, getAdaptiveDisplayFontSize } from '@/lib/typography'
+import { clampFontSize } from '@/lib/typography'
+
+import type { PerWindowSettings } from '@/types/electron'
+import { AppearancePanel } from '@/components/settings/AppearancePanel'
+import { GlobalFontPanel } from '@/components/settings/GlobalFontPanel'
 
 type SettingsTab = 'global' | 'calendar' | 'notes' | 'manage' | 'tags'
 
@@ -21,408 +25,12 @@ const SETTINGS_TABS = [
   { id: 'tags', icon: Tag, label: '标签管理', description: '维护事件分类标签' },
 ] as const
 
-interface PerWinSettings {
-  fontFamily: string; fontSize: number; backgroundColor: string; backgroundOpacity: number; textColor: string; edgeAutoHide?: boolean; showDockArea?: boolean
-}
-
-// ── Reusable settings panel (for calendar/notes tabs) ──
-function AppearancePanel({
-  settings, systemFonts, onUpdate, textColor, showColorControls = true,
-}: {
-  settings: PerWinSettings
-  systemFonts: string[]
-  onUpdate: (key: string, value: unknown) => void
-  textColor: string
-  showColorControls?: boolean
-}) {
-  const [fontSearch, setFontSearch] = useState('')
-  const [fontDropdownOpen, setFontDropdownOpen] = useState(false)
-  const [activeFontIndex, setActiveFontIndex] = useState(0)
-  const fontListId = useId()
-
-  const filteredFonts = useMemo(() => {
-    if (!fontSearch) return systemFonts
-    const q = fontSearch.toLowerCase()
-    return systemFonts.filter((f) => f.toLowerCase().includes(q))
-  }, [systemFonts, fontSearch])
-
-  useEffect(() => {
-    if (!fontDropdownOpen) return
-    document.getElementById(`${fontListId}-${activeFontIndex}`)?.scrollIntoView({ block: 'nearest' })
-  }, [activeFontIndex, fontDropdownOpen, fontListId])
-
-  const applyFont = (fontName: string) => {
-    onUpdate('fontFamily', fontName)
-    setFontSearch('')
-    setFontDropdownOpen(false)
-  }
-
-  const handleFontKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      setFontDropdownOpen(false)
-      setFontSearch('')
-      return
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
-      event.preventDefault()
-      setFontDropdownOpen(true)
-      if (filteredFonts.length === 0) return
-      setActiveFontIndex((current) => {
-        if (event.key === 'Home') return 0
-        if (event.key === 'End') return filteredFonts.length - 1
-        return event.key === 'ArrowDown'
-          ? (current + 1) % filteredFonts.length
-          : (current - 1 + filteredFonts.length) % filteredFonts.length
-      })
-      return
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      const selected = fontDropdownOpen ? filteredFonts[activeFontIndex] : undefined
-      const fontName = selected || fontSearch.trim()
-      if (fontName) applyFont(fontName)
-    }
-  }
-
-  const bgHex = settings.backgroundColor.replace('#', '')
-  const bgWithAlpha = `#${bgHex}${Math.round(settings.backgroundOpacity * 255).toString(16).padStart(2, '0')}`
-  const dark = isLightColor(textColor)
-  const menuSurface = dark ? '#1C1C1E' : '#F2F2F7'
-  const hoverBg = dark ? 'hover:bg-white/5' : 'hover:bg-black/5'
-  const labelO = dark ? 0.62 : 0.72
-  const mutedO = dark ? 0.7 : 0.78
-  const requestedFontSize = clampFontSize(settings.fontSize)
-  const previewFontSize = getAdaptiveDisplayFontSize(requestedFontSize)
-  const configuredContrast = contrastRatio(settings.backgroundColor, settings.textColor)
-  const previewTextColor = ensureReadableTextColor(settings.backgroundColor, settings.textColor)
-  const adaptedFontLabel = previewFontSize === requestedFontSize
-    ? `${requestedFontSize}px`
-    : `${requestedFontSize} 档 · 显示 ${previewFontSize}px`
-
-  return (
-    <div className="space-y-4">
-      {/* Font */}
-      <div>
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <label className="text-[11px] font-semibold uppercase tracking-widest" style={{ opacity: labelO }}>字体</label>
-          <span className="text-[10px] tabular-nums" style={{ opacity: mutedO }}>{systemFonts.length > 0 ? `系统字体 ${systemFonts.length} 种` : '字体加载中…'}</span>
-        </div>
-        <div className="relative">
-          <input
-            type="text"
-            maxLength={120}
-            autoComplete="off"
-            role="combobox"
-            aria-autocomplete="list"
-            aria-controls={fontListId}
-            aria-activedescendant={fontDropdownOpen && filteredFonts[activeFontIndex] ? `${fontListId}-${activeFontIndex}` : undefined}
-            aria-expanded={fontDropdownOpen}
-            aria-label="窗口字体"
-            value={fontDropdownOpen ? fontSearch : settings.fontFamily}
-            onChange={(e) => { setFontSearch(e.target.value); setActiveFontIndex(0); setFontDropdownOpen(true) }}
-            onFocus={(event) => {
-              const input = event.currentTarget
-              setFontSearch('')
-              setFontDropdownOpen(true)
-              window.requestAnimationFrame(() => input.select())
-            }}
-            onBlur={() => setTimeout(() => { setFontDropdownOpen(false); setFontSearch('') }, 200)}
-            onKeyDown={handleFontKeyDown}
-            placeholder={`当前：${settings.fontFamily || '默认字体'}；输入可搜索`}
-            className="settings-input w-full rounded-lg border px-3 py-2 text-[12px] outline-none transition-colors"
-            style={{ borderColor: `${textColor}10`, color: textColor }}
-          />
-          {fontDropdownOpen && filteredFonts.length > 0 && (
-            <div
-              id={fontListId}
-              className="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-auto overscroll-contain rounded-lg shadow-2xl"
-              style={{ background: `${menuSurface}fa` }}
-              role="listbox"
-              aria-label="系统字体"
-            >
-              {filteredFonts.map((f, index) => (
-                <button
-                  key={f}
-                  id={`${fontListId}-${index}`}
-                  type="button"
-                  tabIndex={-1}
-                  onMouseEnter={() => setActiveFontIndex(index)}
-                  onMouseDown={(event) => { event.preventDefault(); applyFont(f) }}
-                  className={`font-option min-h-8 w-full px-2.5 py-1.5 text-left text-[12px] leading-snug ${index === activeFontIndex ? (dark ? 'bg-white/8' : 'bg-black/8') : hoverBg} transition-colors`}
-                  style={{ fontFamily: `"${f}", system-ui, sans-serif` }}
-                  title={f}
-                  role="option"
-                  aria-selected={f === settings.fontFamily}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Font size */}
-      <div>
-        <label className="text-[11px] font-semibold uppercase tracking-widest mb-1.5 block" style={{ opacity: labelO }}>字号 <span style={{ opacity: mutedO }} className="font-normal">{adaptedFontLabel}</span></label>
-        <div className="flex items-center gap-2">
-          <span className="w-4 text-[10px] tabular-nums opacity-45">{FONT_SIZE_MIN}</span>
-          <input type="range" min={FONT_SIZE_MIN} max={FONT_SIZE_MAX} step="1" value={requestedFontSize}
-            onChange={(e) => onUpdate('fontSize', parseInt(e.target.value))}
-            aria-label="字号"
-            className="settings-range flex-1" />
-          <span className="w-5 text-right text-[10px] tabular-nums opacity-45">{FONT_SIZE_MAX}</span>
-          <span className="text-[12px] tabular-nums w-10 text-right opacity-60">{requestedFontSize}</span>
-        </div>
-        <p className="mt-1 text-[10px]" style={{ opacity: mutedO }}>10–32 按实际像素显示；33–60 连续放大并自动切换大字布局。</p>
-      </div>
-
-      {showColorControls && (
-        <div>
-          <label className="text-[11px] font-semibold uppercase tracking-widest mb-1.5 block" style={{ opacity: labelO }}>背景色</label>
-          <div className="flex items-center gap-2">
-            <input type="color" value={settings.backgroundColor}
-              onChange={(e) => onUpdate('backgroundColor', e.target.value)}
-              aria-label="选择背景色"
-              className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-            <input type="text" defaultValue={settings.backgroundColor} key={settings.backgroundColor}
-              onBlur={(e) => {
-                const value = e.currentTarget.value.trim()
-                if (/^#[0-9a-fA-F]{6}$/.test(value)) onUpdate('backgroundColor', value)
-                else e.currentTarget.value = settings.backgroundColor
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-              aria-label="背景色十六进制值"
-              className="settings-input flex-1 rounded-lg border px-3 py-2 text-[11px] outline-none font-mono transition-colors"
-              style={{ borderColor: `${textColor}10`, color: textColor }} />
-          </div>
-          {configuredContrast < 4.5 && (
-            <p className="mt-1.5 text-[10px] leading-relaxed text-amber-500/85" role="status">
-              当前文字与背景对比度为 {configuredContrast.toFixed(1)}:1；日历会自动改用高对比文字，避免内容看不清。
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Opacity */}
-      <div>
-        <label className="text-[11px] font-semibold uppercase tracking-widest opacity-45 mb-1.5 block">不透明度 <span className="opacity-60 font-normal">{Math.round(settings.backgroundOpacity * 100)}%</span></label>
-        <div className="flex items-center gap-2">
-          <input type="range" min="10" max="100" step="1" value={Math.round(settings.backgroundOpacity * 100)}
-            onChange={(e) => onUpdate('backgroundOpacity', parseInt(e.target.value) / 100)}
-            aria-label="不透明度"
-            className="settings-range flex-1" />
-          <span className="text-[12px] tabular-nums w-9 text-right opacity-50">{Math.round(settings.backgroundOpacity * 100)}%</span>
-        </div>
-      </div>
-
-      {showColorControls && (
-        <div>
-          <label className="text-[11px] font-semibold uppercase tracking-widest opacity-45 mb-1.5 block">文字色</label>
-          <div className="flex items-center gap-2">
-            <input type="color" value={settings.textColor}
-              onChange={(e) => onUpdate('textColor', e.target.value)}
-              aria-label="选择文字色"
-              className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-            <input type="text" defaultValue={settings.textColor} key={settings.textColor}
-              onBlur={(e) => {
-                const value = e.currentTarget.value.trim()
-                if (/^#[0-9a-fA-F]{6}$/.test(value)) onUpdate('textColor', value)
-                else e.currentTarget.value = settings.textColor
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-              aria-label="文字色十六进制值"
-              className="settings-input flex-1 rounded-lg border px-3 py-2 text-[11px] outline-none font-mono transition-colors"
-              style={{ borderColor: `${textColor}10`, color: textColor }} />
-          </div>
-        </div>
-      )}
-
-      {showColorControls && <div>
-        <label className="text-[11px] font-semibold uppercase tracking-widest mb-1.5 block" style={{ opacity: labelO }}>预览</label>
-        <div
-          className="settings-preview rounded-xl border p-3 flex flex-col gap-1.5 overflow-hidden"
-          style={{
-            backgroundColor: bgWithAlpha,
-            borderColor: `${textColor}10`,
-            color: previewTextColor,
-            fontFamily: `"${settings.fontFamily}", system-ui, sans-serif`,
-            fontSize: previewFontSize + 'px',
-          }}
-        >
-          <div className="font-medium opacity-80" style={{ fontSize: previewFontSize + 'px' }}>预览标题</div>
-          <div className="opacity-45" style={{ fontSize: (previewFontSize * 0.9) + 'px' }}>展示当前字体、颜色和适配后字号的真实效果</div>
-          <div className="flex gap-1.5 mt-0.5">
-            <span className="px-1.5 py-0.5 rounded text-sky-400/80" style={{ fontSize: (previewFontSize * 0.8) + 'px', backgroundColor: '#38bdf815' }}>标签A</span>
-            <span className="px-1.5 py-0.5 rounded text-teal-400/80" style={{ fontSize: (previewFontSize * 0.8) + 'px', backgroundColor: '#2dd4bf15' }}>标签B</span>
-          </div>
-        </div>
-      </div>}
-    </div>
-  )
-}
-
-// ── Global font panel (in global tab) ──
-function GlobalFontPanel({
-  globalFontFamily, globalFontSize, systemFonts, onUpdateGlobalFont, onUpdateGlobalFontSize,
-  isDark, textColor,
-}: {
-  globalFontFamily: string
-  globalFontSize: number
-  systemFonts: string[]
-  onUpdateGlobalFont: (family: string) => void
-  onUpdateGlobalFontSize: (size: number) => void
-  isDark: boolean
-  textColor: string
-}) {
-  const [fontSearch, setFontSearch] = useState('')
-  const [fontDropdownOpen, setFontDropdownOpen] = useState(false)
-  const [activeFontIndex, setActiveFontIndex] = useState(0)
-  const fontListId = useId()
-
-  const filteredFonts = useMemo(() => {
-    if (!fontSearch) return systemFonts
-    const q = fontSearch.toLowerCase()
-    return systemFonts.filter((f) => f.toLowerCase().includes(q))
-  }, [systemFonts, fontSearch])
-
-  useEffect(() => {
-    if (!fontDropdownOpen) return
-    document.getElementById(`${fontListId}-${activeFontIndex}`)?.scrollIntoView({ block: 'nearest' })
-  }, [activeFontIndex, fontDropdownOpen, fontListId])
-
-  const bgColor = isDark ? '#1C1C1E' : '#F2F2F7'
-  const borderColor = isDark ? '#ffffff10' : '#00000010'
-  const labelO = isDark ? 0.62 : 0.72
-  const mutedO = isDark ? 0.7 : 0.78
-  const subtleO = isDark ? 0.62 : 0.7
-  const requestedGlobalFontSize = clampFontSize(globalFontSize)
-  const displayGlobalFontSize = getAdaptiveDisplayFontSize(requestedGlobalFontSize)
-  const globalFontLabel = displayGlobalFontSize === requestedGlobalFontSize
-    ? `${requestedGlobalFontSize}px`
-    : `${requestedGlobalFontSize} 档 · 显示 ${displayGlobalFontSize}px`
-
-  const applyGlobalFont = (fontName: string) => {
-    onUpdateGlobalFont(fontName)
-    setFontSearch('')
-    setFontDropdownOpen(false)
-  }
-
-  const handleFontKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      setFontDropdownOpen(false)
-      setFontSearch('')
-      return
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
-      event.preventDefault()
-      setFontDropdownOpen(true)
-      if (filteredFonts.length === 0) return
-      setActiveFontIndex((current) => {
-        if (event.key === 'Home') return 0
-        if (event.key === 'End') return filteredFonts.length - 1
-        return event.key === 'ArrowDown'
-          ? (current + 1) % filteredFonts.length
-          : (current - 1 + filteredFonts.length) % filteredFonts.length
-      })
-      return
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      const selected = fontDropdownOpen ? filteredFonts[activeFontIndex] : undefined
-      const fontName = selected || fontSearch.trim()
-      if (fontName) applyGlobalFont(fontName)
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <label className="text-[11px] font-semibold uppercase tracking-widest" style={{ opacity: labelO }}>全局字体</label>
-          <span className="text-[10px] tabular-nums" style={{ opacity: subtleO }}>{systemFonts.length > 0 ? `系统字体 ${systemFonts.length} 种` : '字体加载中…'}</span>
-        </div>
-        <div className="relative">
-          <input
-            type="text"
-            maxLength={120}
-            autoComplete="off"
-            role="combobox"
-            aria-autocomplete="list"
-            aria-controls={fontListId}
-            aria-activedescendant={fontDropdownOpen && filteredFonts[activeFontIndex] ? `${fontListId}-${activeFontIndex}` : undefined}
-            aria-expanded={fontDropdownOpen}
-            aria-label="全局字体"
-            value={fontDropdownOpen ? fontSearch : globalFontFamily}
-            onChange={(e) => { setFontSearch(e.target.value); setActiveFontIndex(0); setFontDropdownOpen(true) }}
-            onFocus={(event) => {
-              const input = event.currentTarget
-              setFontSearch('')
-              setFontDropdownOpen(true)
-              window.requestAnimationFrame(() => input.select())
-            }}
-            onBlur={() => setTimeout(() => { setFontDropdownOpen(false); setFontSearch('') }, 200)}
-            onKeyDown={handleFontKeyDown}
-            placeholder={`当前：${globalFontFamily || '默认字体'}；输入可搜索`}
-            className="settings-input w-full rounded-lg border px-3 py-2 text-[12px] outline-none transition-colors"
-            style={{ borderColor, color: textColor }}
-          />
-          {fontDropdownOpen && filteredFonts.length > 0 && (
-            <div
-              id={fontListId}
-              className="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-auto overscroll-contain rounded-lg shadow-2xl"
-              style={{ background: `${bgColor}fa` }}
-              role="listbox"
-              aria-label="系统字体"
-            >
-              {filteredFonts.map((f, index) => (
-                <button
-                  key={f}
-                  id={`${fontListId}-${index}`}
-                  type="button"
-                  tabIndex={-1}
-                  onMouseEnter={() => setActiveFontIndex(index)}
-                  onMouseDown={(event) => { event.preventDefault(); applyGlobalFont(f) }}
-                  className={`font-option min-h-8 w-full px-2.5 py-1.5 text-left text-[12px] leading-snug ${index === activeFontIndex ? (isDark ? 'bg-white/8' : 'bg-black/8') : (isDark ? 'hover:bg-white/5' : 'hover:bg-black/5')} transition-colors`}
-                  style={{ fontFamily: `"${f}", system-ui, sans-serif` }}
-                  title={f}
-                  role="option"
-                  aria-selected={f === globalFontFamily}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <p className="text-[10px] mt-1" style={{ opacity: subtleO }}>此字体将同时应用于日历和所有便签</p>
-      </div>
-
-      <div>
-        <label className="text-[11px] font-semibold uppercase tracking-widest opacity-45 mb-1.5 block">全局字号 <span className="opacity-60 font-normal">{globalFontLabel}</span></label>
-        <div className="flex items-center gap-2">
-          <span className="w-4 text-[10px] tabular-nums opacity-45">{FONT_SIZE_MIN}</span>
-          <input type="range" min={FONT_SIZE_MIN} max={FONT_SIZE_MAX} step="1" value={requestedGlobalFontSize}
-            onChange={(e) => onUpdateGlobalFontSize(parseInt(e.target.value))}
-            aria-label="全局字号"
-            className="settings-range flex-1" />
-          <span className="w-5 text-right text-[10px] tabular-nums opacity-45">{FONT_SIZE_MAX}</span>
-          <span className="text-[12px] tabular-nums w-10 text-right opacity-60">{requestedGlobalFontSize}</span>
-        </div>
-        <p className="text-[11px] mt-1" style={{ opacity: subtleO }}>日历与便签使用同一字号；大字号会连续放大并自动重排内容，不会等比撑大控件和留白。</p>
-      </div>
-    </div>
-  )
-}
-
 export function SettingsWindow() {
   const [themeMode, setThemeMode] = useState<'dark' | 'light'>('dark')
   const [globalFontFamily, setGlobalFontFamily] = useState('Microsoft YaHei')
   const [globalFontSize, setGlobalFontSize] = useState(14)
-  const [calendarSettings, setCalendarSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7', edgeAutoHide: true, showDockArea: true })
-  const [notesSettings, setNotesSettings] = useState<PerWinSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7' })
+  const [calendarSettings, setCalendarSettings] = useState<PerWindowSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7', edgeAutoHide: true, showDockArea: true })
+  const [notesSettings, setNotesSettings] = useState<PerWindowSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7' })
   const [loaded, setLoaded] = useState(false)
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<SettingsTab>('global')
@@ -451,10 +59,19 @@ export function SettingsWindow() {
     | null
   >(null)
   const tags = useTagStore((s) => s.tags)
+  const tagsLoadError = useTagStore((s) => s.tagsLoadError)
   const addTag = useTagStore((s) => s.addTag)
   const updateTag = useTagStore((s) => s.updateTag)
   const deleteTag = useTagStore((s) => s.deleteTag)
   const tagFormDirty = showTagForm && `${tagNameInput}|${tagColorInput.toLowerCase()}` !== tagDraftBaseline
+
+  useEffect(() => {
+    if (!tagsLoadError) return
+    setShowTagForm(false)
+    setEditingTagId(null)
+    setTagNameInput('')
+    setTagDraftBaseline('|#2563eb')
+  }, [tagsLoadError])
 
   const closeTagForm = () => {
     setShowTagForm(false)
@@ -534,17 +151,13 @@ export function SettingsWindow() {
 
       // Load tags into settings window's store
       window.electronAPI.getTags().then((data) => {
-        if (Array.isArray(data)) {
-          useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
-        }
-      })
+        useTagStore.getState().loadTagsState(data)
+      }).catch((error) => reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法读取标签。'))
       // Listen for tag changes from other windows
       const cleanupTags = window.electronAPI.onTagsChanged(() => {
         window.electronAPI!.getTags().then((data) => {
-          if (Array.isArray(data)) {
-            useTagStore.getState().loadTags(data as import('@/types/tag.types').EventTag[])
-          }
-        })
+          useTagStore.getState().loadTagsState(data)
+        }).catch((error) => reportPersistenceIssue('标签读取失败', error instanceof Error ? error.message : '无法刷新标签。'))
       })
 
       return () => {
@@ -971,7 +584,7 @@ export function SettingsWindow() {
                       title={note.isVisible ? '可见' : '隐藏'}
                     />
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium truncate" style={{ color: note.color }}>
+                      <div className="text-xs font-medium truncate" style={{ color: textColor }}>
                         {note.title}
                       </div>
                       <div className="text-[10px] opacity-45 mt-0.5">
@@ -1026,10 +639,19 @@ export function SettingsWindow() {
                         <button
                           onClick={async () => {
                             const scrollTop = settingsContentRef.current?.scrollTop ?? 0
+                            try {
+                              const result = await window.electronAPI?.showNote(note.id)
+                              if (!result?.ok) {
+                                reportPersistenceIssue('便签未显示', result?.message || '便签状态未能写入磁盘。')
+                                return
+                              }
+                            } catch (error) {
+                              reportPersistenceIssue('便签未显示', error instanceof Error ? error.message : '无法调用显示便签操作。')
+                              return
+                            }
                             setManageNotes((items) => items.map((item) => item.id === note.id
                               ? { ...item, isVisible: true, isHidden: false }
                               : item))
-                            window.electronAPI?.showNote(note.id)
                             window.requestAnimationFrame(() => {
                               if (settingsContentRef.current) settingsContentRef.current.scrollTop = scrollTop
                             })
@@ -1113,6 +735,8 @@ export function SettingsWindow() {
             <div className="flex items-center justify-between">
               <p className="text-[11px] opacity-55">管理事件分类标签</p>
               <button
+                type="button"
+                disabled={!!tagsLoadError}
                 onClick={(event) => {
                   tagFormReturnFocusRef.current = event.currentTarget
                   setEditingTagId(null)
@@ -1121,20 +745,32 @@ export function SettingsWindow() {
                   setTagDraftBaseline('|#2563eb')
                   setShowTagForm(true)
                 }}
-                className="min-h-8 text-xs opacity-55 hover:opacity-80 transition-opacity px-2 rounded border"
+                className="min-h-8 text-xs opacity-55 hover:opacity-80 transition-opacity px-2 rounded border disabled:cursor-not-allowed disabled:opacity-30"
                 style={{ borderColor: `${textColor}10` }}
+                title={tagsLoadError || '新建标签'}
               >
                 新建标签
               </button>
             </div>
 
-            {showTagForm && (
+            {tagsLoadError && (
+              <div
+                role="alert"
+                className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-200"
+              >
+                <div className="font-medium">标签数据暂时只读</div>
+                <div className="mt-1 opacity-80">{tagsLoadError} 请先备份并恢复 tags.json；在此之前不会执行新增、编辑或删除。</div>
+              </div>
+            )}
+
+            {showTagForm && !tagsLoadError && (
               <div
                 className="rounded-lg border p-3 space-y-2"
                 style={{ borderColor: `${textColor}10` }}
                 role="group"
                 aria-label={editingTagId ? '编辑标签' : '新建标签'}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return
                   if (event.key !== 'Escape') return
                   event.preventDefault()
                   event.stopPropagation()
@@ -1215,9 +851,11 @@ export function SettingsWindow() {
                     style={{ borderColor: `${textColor}08` }}
                   >
                     <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
-                    <span className="flex-1 text-xs font-medium" style={{ color: tag.color }}>{tag.name}</span>
+                    <span className="flex-1 text-xs font-medium" style={{ color: textColor }}>{tag.name}</span>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
+                        type="button"
+                        disabled={!!tagsLoadError}
                         onClick={(event) => {
                           tagFormReturnFocusRef.current = event.currentTarget
                           setEditingTagId(tag.id)
@@ -1226,14 +864,16 @@ export function SettingsWindow() {
                           setTagDraftBaseline(`${tag.name}|${tag.color.toLowerCase()}`)
                           setShowTagForm(true)
                         }}
-                        className="min-h-8 px-2 text-[11px] opacity-50 hover:opacity-80 rounded transition-all"
+                        className="min-h-8 px-2 text-[11px] opacity-50 hover:opacity-80 rounded transition-all disabled:cursor-not-allowed disabled:opacity-25"
                         style={{ color: textColor }}
                       >
                         编辑
                       </button>
                       <button
+                        type="button"
+                        disabled={!!tagsLoadError}
                         onClick={() => setPendingConfirm({ type: 'delete-tag', id: tag.id, title: tag.name })}
-                        className="min-h-8 px-2 text-[11px] text-red-400/40 hover:text-red-400 rounded transition-all"
+                        className="min-h-8 px-2 text-[11px] text-red-400/40 hover:text-red-400 rounded transition-all disabled:cursor-not-allowed disabled:opacity-25"
                       >
                         删除
                       </button>
