@@ -7,6 +7,7 @@
 Var oknoteUserBackup
 Var oknoteMachineBackup
 Var oknoteTargetBackup
+Var oknoteSelectedInstallDir
 
 Function OknotePreserveUserData
   Exch $R0
@@ -59,14 +60,16 @@ FunctionEnd
 !macro customCheckAppRunning
   ; Preserve the builder's standard process check/close behavior.
   ; When the destination changes, check the OLD executable before copying.
-  Push $INSTDIR
+  ; The upstream running-process macro may leave nsExec values on the data
+  ; stack. Preserve the selected path in a dedicated variable, not that stack.
+  StrCpy $oknoteSelectedInstallDir $INSTDIR
   ReadRegStr $R0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
   ${If} $R0 != ""
     StrCpy $INSTDIR $R0
   ${EndIf}
   !insertmacro IS_POWERSHELL_AVAILABLE
   !insertmacro _CHECK_APP_RUNNING
-  Pop $INSTDIR
+  StrCpy $INSTDIR $oknoteSelectedInstallDir
   Push $R0
   ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
   Push $R0
@@ -98,5 +101,21 @@ FunctionEnd
   Call OknoteRestoreUserData
   Push "$oknoteMachineBackup"
   Call OknoteRestoreUserData
+  !ifndef OKNOTE_INSTALLER_TEST
+    WriteRegStr SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}" "DisplayName" "${PRODUCT_NAME}"
+    WriteRegStr SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}" "IconUri" "$INSTDIR\resources\icons\app-64.png"
+  !endif
+!macroend
+!endif
+
+!ifndef OKNOTE_INSTALLER_TEST
+!macro customUnInstall
+  ; Remove only this installation's branding; another installed copy may own it.
+  ReadRegStr $R0 SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}" "IconUri"
+  ${If} $R0 == "$INSTDIR\resources\icons\app-64.png"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}" "DisplayName"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}" "IconUri"
+    DeleteRegKey /ifempty SHELL_CONTEXT "Software\Classes\AppUserModelId\${APP_ID}"
+  ${EndIf}
 !macroend
 !endif

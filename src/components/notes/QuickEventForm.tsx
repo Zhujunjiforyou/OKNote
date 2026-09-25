@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Note } from '@/types/notes.types'
 import type { CalendarEvent } from '@/types/calendar.types'
-import { X } from 'lucide-react'
+import { X } from '@/components/ui/icons'
 import { useTagStore } from '@/stores/tag.store'
 import { generateId, getLocalDateKey, hexToLuminance, isImeComposing, normalizeHexColor } from '@/lib/utils'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'

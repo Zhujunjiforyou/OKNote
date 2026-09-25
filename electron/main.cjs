@@ -2,7 +2,9 @@ const { app, BrowserWindow, Tray, Menu, Notification, dialog, nativeImage, ipcMa
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
+const { APP_NAME, notificationIdentity, registerNotificationIdentity } = require('./notification-identity.cjs');
+const { defaultFont, fallbackFonts, fontQuery, parseFontNames, loginItemOptions, shouldStartHidden, macMenuTemplate } = require('./platform.cjs');
 const { pathToFileURL } = require('url');
 const { createFullTidyRegion, createPreferredTidyRegions, packTidyItemsResponsive } = require('./tidy-layout.cjs');
 const {
@@ -27,6 +29,13 @@ const { listLegacyJsonFiles } = require('./legacy-json.cjs');
 const { migrateUserData: copyLegacyUserData } = require('./user-data-migration.cjs');
 const { commitNoteSnapshot, getNoteRevision } = require('./note-persistence.cjs');
 const { calendarMinimumForWorkArea, noteMinimumForWorkArea } = require('./window-constraints.cjs');
+const { configureDesktopWindow, getBinding: getMacDesktopBinding } = require('./macos-desktop-window.cjs');
+const { createCalendarPresentation } = require('./calendar-presentation.cjs');
+const { waitForNativeNotification } = require('./notification-delivery.cjs');
+const { notificationSettingsState, suppressNotificationFallback } = require('./notification-settings.cjs');
+const calendarPresentation = createCalendarPresentation(configureDesktopWindow, app);
+const { macLoginItemState, setMacLoginItem } = require('./login-item-state.cjs');
+const { watchMouseRelease } = require('./drag-release-watch.cjs');
 const {
   canonicalNoteFileNames,
   canonicalTrashRecordNames,
@@ -39,11 +48,15 @@ const {
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 const DEV_PORT = parseInt(process.env.VITE_PORT || '5173', 10);
 const isIsolatedTestInstance = process.env.OKNOTE_SMOKE_TEST === '1' || process.env.OKNOTE_E2E_TEST === '1';
+// Explicit installed-build QA may exercise Windows notifications while data,
+// login settings and the running user's windows remain isolated.
+const nativeNotificationTest = app.isPackaged && isIsolatedTestInstance && process.env.OKNOTE_NATIVE_NOTIFICATION_QA === '1';
 // Acquire the lock before inspecting or migrating user data. A second instance
 // must never participate in migration, even briefly, before it exits.
 const hasSingleInstanceLock = isIsolatedTestInstance || app.requestSingleInstanceLock();
 const DEFAULT_USER_DATA_DIR = app.getPath('userData');
-const INSTALL_USER_DATA_DIR = app.isPackaged ? path.join(path.dirname(process.execPath), 'user-data') : null;
+const INSTALL_USER_DATA_DIR = app.isPackaged && process.platform === 'win32' ? path.join(path.dirname(process.execPath), 'user-data') : null;
+const ICONS_DIR = app.isPackaged ? path.join(process.resourcesPath, 'icons') : path.join(__dirname, '..', 'build', 'icons');
 const startupReliabilityIssues = [];
 
 function queueStartupReliabilityIssue(title, message) {
@@ -93,6 +106,17 @@ function resolveUserDataDir() {
 }
 
 const USER_DATA_DIR = hasSingleInstanceLock ? resolveUserDataDir() : DEFAULT_USER_DATA_DIR;
+const notificationAppIdentity = notificationIdentity(app.isPackaged);
+app.setName(isIsolatedTestInstance && !nativeNotificationTest ? `${APP_NAME} 测试` : notificationAppIdentity.name);
+// Changing the display name must not move an existing user's profile.
+app.setPath('userData', USER_DATA_DIR);
+let nativeNotificationIdentityReady = process.platform !== 'win32';
+let reminderDeliveryReady = false;
+let reminderScanRunning = false;
+let reminderRetryPending = false;
+const activeReminderNotifications = new Set();
+const reminderDeliveryKeys = new Set();
+const reminderReadDuringDelivery = new Set();
 const BOUNDS_FILE = path.join(USER_DATA_DIR, 'window-bounds.json');
 
 // ── Window registry ──
@@ -352,9 +376,9 @@ let appSettings = {
   autoLaunch: false,
   startMinimized: false,
   hideNotificationContent: false,
-  globalFontFamily: 'Microsoft YaHei',
+  globalFontFamily: defaultFont(),
   globalFontSize: 14,
-  calendar: { ...perWindowDefaults, edgeAutoHide: true, showDockArea: true },
+  calendar: { ...perWindowDefaults, edgeAutoHide: process.platform !== 'darwin', showDockArea: true },
   notes: { ...perWindowDefaults },
 };
 let settingsReadOnly = false;
@@ -390,7 +414,7 @@ function loadSettings() {
       appSettings.autoLaunch = typeof raw.autoLaunch === 'boolean' ? raw.autoLaunch : false;
       appSettings.startMinimized = typeof raw.startMinimized === 'boolean' ? raw.startMinimized : false;
       appSettings.hideNotificationContent = raw.hideNotificationContent === true;
-      appSettings.globalFontFamily = safeFontFamily(raw.globalFontFamily, 'Microsoft YaHei');
+      appSettings.globalFontFamily = safeFontFamily(raw.globalFontFamily, defaultFont());
       appSettings.globalFontSize = clampFontSetting(raw.globalFontSize);
       appSettings.calendar = normalizeWindowSettings(raw.calendar, perWindowDefaults, true);
       appSettings.notes = normalizeWindowSettings(raw.notes, perWindowDefaults);
@@ -414,16 +438,15 @@ function saveSettings() {
   }
 }
 function applyLoginItemSettings() {
+  // Isolated verification must not modify the real account's login items.
+  if (isIsolatedTestInstance) return { ok: true, enabled: appSettings.autoLaunch, startMinimized: appSettings.startMinimized };
   try {
-    const desiredArgs = appSettings.autoLaunch && appSettings.startMinimized ? ['--hidden'] : [];
-    app.setLoginItemSettings({
-      openAtLogin: appSettings.autoLaunch,
-      path: process.execPath,
-      args: desiredArgs,
-    });
+    if(process.platform === 'darwin') return { ...setMacLoginItem(app, appSettings.autoLaunch), startMinimized: appSettings.startMinimized };
+    const options = loginItemOptions(appSettings);
+    app.setLoginItemSettings(options);
     // Query the exact executable + argument registration. A generic query can
     // report openAtLogin=true even when Windows dropped the --hidden argument.
-    const actual = app.getLoginItemSettings({ path: process.execPath, args: desiredArgs });
+    const actual = app.getLoginItemSettings({ path: options.path, args: options.args });
     return {
       ok: actual.openAtLogin === appSettings.autoLaunch,
       enabled: actual.openAtLogin,
@@ -432,6 +455,15 @@ function applyLoginItemSettings() {
   } catch (error) {
     console.error('applyLoginItemSettings failed:', error.message);
     return { ok: false, enabled: false, message: error.message };
+  }
+}
+function getLoginItemSnapshot() {
+  if(process.platform !== 'darwin' || isIsolatedTestInstance) return {autoLaunch:appSettings.autoLaunch};
+  try {
+    const state = macLoginItemState(app.getLoginItemSettings());
+    return {autoLaunch:state.enabled, autoLaunchStatus:state.status, autoLaunchMessage:state.message};
+  } catch {
+    return {autoLaunch:appSettings.autoLaunch, autoLaunchMessage:'暂时无法读取系统登录项状态'};
   }
 }
 let settingsSaveTimer=null;
@@ -1274,14 +1306,7 @@ function isValidDataKey(key) {
 
 // ── System fonts (async, non-blocking) ──
 let cachedFonts = null;
-const builtinFonts = [
-  'Inter',
-  'Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi', 'FangSong',
-  'DengXian', 'YouYuan', 'NSimSun', 'Microsoft JhengHei',
-  'Arial', 'Times New Roman', 'Courier New', 'Consolas', 'Segoe UI',
-  'Verdana', 'Georgia', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
-  'Palatino Linotype', 'Lucida Console', 'Cambria', 'Calibri',
-];
+const builtinFonts = fallbackFonts();
 
 function normalizeSystemFontName(value) {
   if (typeof value !== 'string') return '';
@@ -1303,17 +1328,14 @@ function loadSystemFontsAsync() {
   const names = new Map();
   builtinFonts.forEach((name) => addSystemFont(names, name));
 
-  // Windows keeps the user-facing font names in the registry. File names such
-  // as arialbd.ttf are intentionally not mixed in because they create hundreds
-  // of duplicate or unusable choices in the settings list.
-  const psScript = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; @('HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts','HKCU:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts') | ForEach-Object { $key = Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue; if ($key) { $key.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' -and $_.Name.Length -gt 1 -and $_.Name.Length -lt 80 } | ForEach-Object { (($_.Name -replace '\\s*\\((TrueType|OpenType)\\)', '') -replace '\\s+$', '').Trim() } } }`;
-  exec(`powershell -NoProfile -Command "${psScript.replace(/\n/g, ' ').trim()}"`,
-    { encoding: 'utf-8', timeout: 15000 },
+  const query = fontQuery();
+  if (!query) return;
+  execFile(query.file, query.args,
+    { encoding: 'utf-8', timeout: 30000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
     (err, stdout) => {
       if (!err && stdout) {
-        stdout.split(/[\r\n]+/).forEach((line) => {
-          addSystemFont(names, line);
-        });
+        try { parseFontNames(stdout).forEach((name) => addSystemFont(names, name)); }
+        catch (error) { console.error('System font list could not be parsed:', error.message); }
       }
       cachedFonts = [...names.values()].sort((a,b)=>a.localeCompare(b,'zh-CN',{sensitivity:'base'}));
       const all=[winRegistry.settings,winRegistry.calendar,...Object.values(winRegistry.notes)].filter(Boolean);
@@ -1326,20 +1348,12 @@ function getSystemFonts() {
   return cachedFonts || [...builtinFonts].sort();
 }
 
-// ── Tray icon (16×16 pixel-art memo icon) ──
-// Draws a rounded rectangle with three horizontal lines representing a sticky note
+// ── Shared application / tray artwork ──
 function createTrayIcon() {
-  const s = 16; const buf = Buffer.alloc(s*s*4);
-  for (let y=0; y<s; y++) for (let x=0; x<s; x++) {
-    const i = (y*s+x)*4;
-    const inR = x>=2 && x<s-2 && y>=1 && y<s-1;
-    const onB = (x===2||x===s-3)&&y>=1&&y<s-1 || (y===1||y===s-2)&&x>=2&&x<s-3;
-    const l1=y===5&&x>=5&&x<12, l2=y===8&&x>=5&&x<11, l3=y===11&&x>=5&&x<9;
-    if(l1||l2||l3){buf[i]=0xfb;buf[i+1]=0xbf;buf[i+2]=0x24;buf[i+3]=255}
-    else if(onB){buf[i]=0x3b;buf[i+1]=0x82;buf[i+2]=0xf6;buf[i+3]=255}
-    else if(inR){buf[i]=0x1e;buf[i+1]=0x29;buf[i+2]=0x3e;buf[i+3]=200}
-  }
-  return nativeImage.createFromBuffer(buf,{width:s,height:s});
+  if (process.platform === 'win32') return path.join(ICONS_DIR, 'app.ico');
+  const icon = nativeImage.createFromPath(path.join(ICONS_DIR, process.platform === 'darwin' ? 'trayTemplate.png' : 'app-32.png'));
+  if (process.platform === 'darwin') icon.setTemplateImage(true);
+  return icon;
 }
 let tray=null;
 function createTray(){
@@ -1378,11 +1392,18 @@ function hardenWebContents(win, allowWidgetNavigation = true) {
   });
 }
 function createWidget(opts={}){
+  const desktopWidget = process.platform === 'darwin' && opts.desktop === true;
+  const nonactivatingPanel = desktopWidget || (process.platform === 'darwin' && opts.nonactivating === true);
   const win = new BrowserWindow({
+    title: APP_NAME,
     width:opts.width||400,height:opts.height||680,x:opts.x,y:opts.y,
     minWidth:opts.minWidth||180,minHeight:opts.minHeight||180,
     frame:false,transparent:true,skipTaskbar:true,
+    icon:path.join(ICONS_DIR,'app-256.png'),
     resizable:true,hasShadow:false,backgroundColor:'#00000000',
+    // A nonactivating panel can take keyboard focus without activating the
+    // application, which would dismiss macOS Show Desktop on the first click.
+    ...(nonactivatingPanel ? { type: 'panel', show: false, acceptFirstMouse: true, fullscreenable: false, minimizable: false } : {}),
     webPreferences:{
       preload:path.join(__dirname,'preload.cjs'),
       contextIsolation:true,
@@ -1391,8 +1412,13 @@ function createWidget(opts={}){
       webviewTag:false,
       spellcheck:false,
       safeDialogs:true,
+      ...(desktopWidget ? { backgroundThrottling: false } : {}),
     },
   });
+  if (nonactivatingPanel) {
+    configureDesktopWindow(win, { relativeLevel: desktopWidget ? -1 : 0 });
+    win.showInactive();
+  }
   hardenWebContents(win, true);
   attachDraftCloseGuard(win);
   return win;
@@ -1488,10 +1514,22 @@ function ensureWindowVisible(win) {
 }
 
 // ── Calendar ──
-function showCalendar(){const w=winRegistry.calendar;if(w&&!w.isDestroyed()){ensureWindowVisible(w);w.show();w.focus();setTimeout(()=>checkEdgeAutoHide(),40)}else{createCalendarWindow()}}
-function toggleCalendar(){const w=winRegistry.calendar;if(w&&!w.isDestroyed()){if(w.isVisible()){w.hide();stopEdgePolling()}else{w.show();w.focus();setTimeout(()=>checkEdgeAutoHide(),40)}}else{createCalendarWindow()}}
+function showCalendar({activateApp=false}={}){
+  const w=winRegistry.calendar&&!winRegistry.calendar.isDestroyed()?winRegistry.calendar:createCalendarWindow();
+  ensureWindowVisible(w);
+  calendarPresentation.present(w,{activateApp});
+  setTimeout(()=>checkEdgeAutoHide(),40);
+  return w;
+}
+function toggleCalendar(){
+  const w=winRegistry.calendar;
+  if(w&&!w.isDestroyed()&&w.isVisible()&&(process.platform!=='darwin'||w.isFocused())){
+    calendarPresentation.restore();
+    w.hide();stopEdgePolling();
+  }else showCalendar({activateApp:true});
+}
 function dispatchCalendarAction(action){
-  showCalendar();
+  showCalendar({activateApp:true});
   const cal=winRegistry.calendar;
   if(!cal||cal.isDestroyed()) return;
   if(isCalendarCollapsed) expandCalendar(cal,false);
@@ -1590,7 +1628,7 @@ function createCalendarWindow(){
   const defaults=getDefaultCalendarBounds();
   const minimum=getCalendarMinimumSize(saved || defaults);
   const bounds=sanitizeWindowBounds(saved || {}, defaults, { minWidth: minimum.width, minHeight: minimum.height });
-  winRegistry.calendar=createWidget({...bounds,minWidth:minimum.width,minHeight:minimum.height});
+  winRegistry.calendar=createWidget({...bounds,minWidth:minimum.width,minHeight:minimum.height,desktop:true});
   winRegistry.calendar.webContents.on('did-finish-load',()=>{
     const cal=winRegistry.calendar;
     if(!cal||cal.isDestroyed()) return;
@@ -1843,6 +1881,7 @@ let noteIdSeq=Date.now();
 let externalNoteDrag=null;
 let dockDragPreviewWin=null;
 let dockDragPreviewOutside=false;
+let dockDragSession=null;
 function generateNoteId(){return`note_${++noteIdSeq}`}
 
 function getDockZone(bounds) {
@@ -1866,7 +1905,7 @@ function createDockPreviewHtml(note) {
   const color = safeHexColor(note && note.color, '#2563EB');
   const title = escapeHtml(note && note.title ? note.title : '便签');
   const tag = note && note.noteType === 'echo' ? '视图' : note && note.noteType === 'daily' ? '每日' : '独立';
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>OKNote 便签预览</title><style>
     html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#132033;}
     .card{box-sizing:border-box;width:220px;height:168px;border-radius:8px;border:1px solid rgba(255,255,255,.28);background:${color}dd;box-shadow:0 18px 48px rgba(0,0,0,.34);overflow:hidden;transform:rotate(1.5deg) scale(.98);}
     body.outside .card{border-color:rgba(239,68,68,.58);box-shadow:0 18px 48px rgba(239,68,68,.32);}
@@ -1877,27 +1916,81 @@ function createDockPreviewHtml(note) {
     .hint{padding:0 12px;font-size:11px;opacity:.48;}
   </style></head><body><div class="card"><div class="head"><span class="dot"></span><span class="title">${title}</span><span class="pill">${tag}</span></div><div class="hint">拖拽中，松开后完成操作</div></div></body></html>`;
 }
-function destroyDockDragPreview() {
-  if (dockDragPreviewWin && !dockDragPreviewWin.isDestroyed()) dockDragPreviewWin.close();
+function destroyDockDragPreview({ canceled = true, point, notify = true } = {}) {
+  const drag = dockDragSession;
+  const preview = dockDragPreviewWin;
+  // Clear ownership before closing the native window or notifying React. Both
+  // can trigger another cleanup, or the renderer can already start a new drag.
+  dockDragSession = null;
   dockDragPreviewWin = null;
   dockDragPreviewOutside = false;
+  if (drag) {
+    drag.stopWatch?.();
+    for (const [emitter, event, handler] of drag.listeners) emitter.removeListener(event, handler);
+  }
+  if (preview && !preview.isDestroyed()) preview.destroy();
+  if (notify && drag && !drag.contents.isDestroyed()) {
+    const location = point || drag.point;
+    drag.contents.send('dock-drag-ended', { dragId: drag.id, x: location.x, y: location.y, canceled });
+  }
 }
-function beginDockDragPreview(note, x, y) {
+function beginDockDragPreview(owner, note, x, y, dragId, dockBounds) {
   destroyDockDragPreview();
-  dockDragPreviewWin = new BrowserWindow({
+  const preview = new BrowserWindow({
+    title: `${APP_NAME} 便签预览`, icon: path.join(ICONS_DIR, 'app-256.png'),
     width: 220, height: 168, x: Math.round(x - 110), y: Math.round(y - 24),
     frame: false, transparent: true, skipTaskbar: true, resizable: false,
     focusable: false, hasShadow: false, backgroundColor: '#00000000',
+    ...(process.platform === 'darwin' ? { type: 'panel', show: false, fullscreenable: false } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false, spellcheck: false },
   });
-  hardenWebContents(dockDragPreviewWin, false);
-  dockDragPreviewWin.setIgnoreMouseEvents(true);
-  dockDragPreviewWin.setAlwaysOnTop(true, 'screen-saver');
-  dockDragPreviewWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(createDockPreviewHtml(note || {}))}`);
-  dockDragPreviewWin.on('closed', () => { dockDragPreviewWin = null; dockDragPreviewOutside = false; });
+  dockDragPreviewWin = preview;
+  const drag = { id: dragId, owner, contents: owner.webContents, point: { x, y }, listeners: [], stopWatch: null };
+  dockDragSession = drag;
+  hardenWebContents(preview, false);
+  preview.setIgnoreMouseEvents(true);
+  if (process.platform === 'darwin') {
+    configureDesktopWindow(preview, { level: 'screen-saver', relativeLevel: 0, focusable: false });
+    preview.showInactive();
+  } else {
+    preview.setAlwaysOnTop(true, 'screen-saver');
+  }
+  preview.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(createDockPreviewHtml(note || {}))}`);
+  preview.on('closed', () => {
+    if (dockDragSession === drag) destroyDockDragPreview();
+  });
+  const cancel = () => { if (dockDragSession === drag) destroyDockDragPreview(); };
+  const listen = (emitter, event, handler) => {
+    emitter.on(event, handler);
+    drag.listeners.push([emitter, event, handler]);
+  };
+  for (const event of ['closed', 'hide', 'blur']) listen(owner, event, cancel);
+  for (const event of ['destroyed', 'render-process-gone', 'did-start-navigation']) listen(owner.webContents, event, cancel);
+  listen(owner.webContents, 'before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'Escape') { event.preventDefault(); cancel(); }
+  });
+  if (process.platform === 'darwin') {
+    drag.stopWatch = watchMouseRelease({
+      isPressed: () => {
+        const pressed = getMacDesktopBinding().isPrimaryMouseButtonDown();
+        if (pressed && dockDragSession === drag) {
+          const point = screen.getCursorScreenPoint();
+          const outside = point.x < dockBounds.left - 28 || point.x > dockBounds.right + 28 ||
+            point.y < dockBounds.top - 28 || point.y > dockBounds.bottom + 28;
+          moveDockDragPreview(point.x, point.y, outside);
+        }
+        return pressed;
+      },
+      onRelease: () => {
+        if (dockDragSession === drag) destroyDockDragPreview({ canceled: false, point: screen.getCursorScreenPoint() });
+      },
+      onError: cancel,
+    });
+  }
 }
 function moveDockDragPreview(x, y, outside) {
   if (!dockDragPreviewWin || dockDragPreviewWin.isDestroyed()) return;
+  if (dockDragSession) dockDragSession.point = { x, y };
   dockDragPreviewWin.setBounds({ x: Math.round(x - 110), y: Math.round(y - 24), width: 220, height: 168 });
   if (dockDragPreviewOutside !== !!outside) {
     dockDragPreviewOutside = !!outside;
@@ -1929,7 +2022,7 @@ function createNoteWindow(noteId,isNew,placement,initialOptions){
     if(Number.isFinite(placement.height)) opts.height=Math.round(placement.height);
   }
   const minimum=getNoteMinimumSize(opts);
-  const w=createWidget({...sanitizeWindowBounds(opts, { width: 270, height: 340, x: defX, y: defY }, { minWidth: minimum.width, minHeight: minimum.height }),minWidth:minimum.width,minHeight:minimum.height});
+  const w=createWidget({...sanitizeWindowBounds(opts, { width: 270, height: 340, x: defX, y: defY }, { minWidth: minimum.width, minHeight: minimum.height }),minWidth:minimum.width,minHeight:minimum.height,desktop:true});
   const hash = isNew ? `/note/${noteId}/new` : `/note/${noteId}`;
   w.loadURL(makeWidgetURL(hash));
   w.on('move', debouncedSaveWindowBounds);
@@ -1945,16 +2038,24 @@ function createNoteWindow(noteId,isNew,placement,initialOptions){
 // ── Settings ──
 function createSettingsWindow(){
   if(winRegistry.settings&&!winRegistry.settings.isDestroyed()){
-    winRegistry.settings.setAlwaysOnTop(true,'pop-up-menu');
+    if(process.platform!=='darwin') winRegistry.settings.setAlwaysOnTop(true,'pop-up-menu');
     winRegistry.settings.show();
     winRegistry.settings.moveTop();
     winRegistry.settings.focus();
     return winRegistry.settings
   }
-  winRegistry.settings=createWidget({width:560,height:660,minWidth:500,minHeight:520,x:undefined,y:undefined});
-  winRegistry.settings.setAlwaysOnTop(true,'pop-up-menu');
+  winRegistry.settings=createWidget({width:560,height:660,minWidth:500,minHeight:520,x:undefined,y:undefined,nonactivating:true});
+  if(process.platform!=='darwin') winRegistry.settings.setAlwaysOnTop(true,'pop-up-menu');
   winRegistry.settings.loadURL(makeWidgetURL('/settings'));
   winRegistry.settings.on('closed',()=>{winRegistry.settings=null});
+  if(process.platform==='darwin') {
+    const settings=winRegistry.settings;
+    settings.on('focus',broadcastSettings);
+    settings.once('ready-to-show',()=>{
+      if(settings.isDestroyed()) return;
+      settings.show(); settings.moveTop(); settings.focus();
+    });
+  }
   return winRegistry.settings;
 }
 
@@ -2022,7 +2123,7 @@ function broadcastSettings(){
   const all=[winRegistry.calendar,winRegistry.settings,...Object.values(winRegistry.notes)].filter(Boolean);
   all.forEach(w=>{if(!w.isDestroyed())w.webContents.send('settings-changed',{
     themeMode: appSettings.themeMode,
-    autoLaunch: appSettings.autoLaunch,
+    ...getLoginItemSnapshot(),
     startMinimized: appSettings.startMinimized,
     hideNotificationContent: appSettings.hideNotificationContent,
     globalFontFamily: appSettings.globalFontFamily,
@@ -2066,6 +2167,7 @@ function deliverStartupReliabilityIssues(win) {
 let eventsCache = null;
 let eventsRevision = 0;
 let eventsLoadError = null;
+const { migrateEventCompletions, setEventCompletion } = require('./event-completion.cjs');
 function loadEventsSnapshot(force = false){
   if (!force && Array.isArray(eventsCache) && !eventsLoadError) return eventsCache;
   const eventsPath=path.join(DATA_DIR,'events.json');
@@ -2074,8 +2176,13 @@ function loadEventsSnapshot(force = false){
   // large existing file on the UI-owning main-process path.
   const events=loadAppData('events.json',false);
   if(Array.isArray(events)){
-    eventsCache=events;
+    eventsCache=migrateEventCompletions(events, getAllNotesState());
     eventsLoadError=null;
+    const hasLegacyCompletion = events.some((event, index) => !event?.completion
+      && (eventsCache[index]?.completion?.completed || eventsCache[index]?.completion?.occurrenceDates?.length));
+    if (hasLegacyCompletion && !saveAppData('events.json', eventsCache)) {
+      eventsLoadError='历史事件完成状态未能写入磁盘；请重试，原每日待办记录已保留。';
+    }
   }else{
     eventsCache=[];
     eventsLoadError=hadStoredEvents?'事件主文件与可用备份均无法读取；原文件已保留，应用不会用空数组覆盖它。':null;
@@ -2167,15 +2274,17 @@ function cleanupReminderState() {
   }
 }
 function createReminderToastHtml(event, playSound) {
+  const appIcon = nativeImage.createFromPath(path.join(ICONS_DIR, 'app-64.png')).toDataURL();
   const timeLabel = event.isAllDay ? '全天（09:00 提醒）' : (event.startTime || '未设置开始时间');
   const hideContent = appSettings.hideNotificationContent === true;
-  const title = escapeHtml(hideContent ? '事件提醒' : (event.title || '未命名事件'));
-  const body = escapeHtml(hideContent ? '打开 OKNote 查看详情' : `${event.startDate} ${timeLabel}`);
+  const summary = typeof event.summaryBody === 'string';
+  const title = escapeHtml(hideContent && !summary ? '事件提醒' : (event.title || '未命名事件'));
+  const body = escapeHtml(summary ? event.summaryBody : hideContent ? '打开 OKNote 查看详情' : `${event.startDate} ${timeLabel}`);
   const shouldPlaySound = playSound ? 'true' : 'false';
   const themeOverride = appSettings.themeMode === 'dark'
     ? `.toast{background:#1c1c1eee;border-color:rgba(255,255,255,.14);box-shadow:0 18px 50px rgba(0,0,0,.42)}.toast::before{background:linear-gradient(145deg,rgba(255,255,255,.07),transparent 48%)}.toast::after{display:none}.title{color:#f5f5f7}.eyebrow,.time{color:rgba(245,245,247,.68)}button{color:#f5f5f7;background:rgba(255,255,255,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.09)}button:hover,.close:hover{background:rgba(255,255,255,.16);color:#fff}.close{color:rgba(245,245,247,.68);background:rgba(255,255,255,.07)}`
     : `.toast{background:#f2f2f7f2;border-color:rgba(255,255,255,.72)}.title{color:#1d1d1f}.eyebrow,.time{color:rgba(29,29,31,.64)}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>OKNote 提醒</title><style>
     html,body{margin:0;width:100%;height:100%;background:rgba(0,0,0,0)!important;overflow:hidden;font-family:"Microsoft YaHei",Segoe UI,system-ui,sans-serif;color:#111827;}
     body{box-sizing:border-box;padding:12px;}
     .toast{box-sizing:border-box;position:relative;width:100%;height:100%;border-radius:22px;background:linear-gradient(145deg,rgba(255,255,255,.76),rgba(244,247,251,.68) 48%,rgba(226,232,240,.58));border:1px solid rgba(255,255,255,.62);box-shadow:0 18px 50px rgba(15,23,42,.24),0 1px 0 rgba(255,255,255,.86) inset,0 -1px 0 rgba(15,23,42,.035) inset,0 0 0 1px rgba(15,23,42,.052) inset;overflow:hidden;clip-path:inset(0 round 22px);animation:reminder-in .22s cubic-bezier(.16,1,.3,1),reminder-glow 1.25s ease-in-out .18s 2;}
@@ -2183,7 +2292,7 @@ function createReminderToastHtml(event, playSound) {
     .toast::after{content:"";position:absolute;inset:.5px;border-radius:21px;border:1px solid rgba(255,255,255,.38);background-image:radial-gradient(rgba(15,23,42,.045) .45px,transparent .45px);background-size:4px 4px;opacity:.28;pointer-events:none;}
     .body{position:relative;z-index:1;display:grid;grid-template-columns:42px minmax(0,1fr);grid-template-rows:auto auto;column-gap:12px;row-gap:9px;padding:16px 17px 14px;}
     .icon{grid-row:1 / 3;width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,rgba(249,250,251,.86),rgba(203,213,225,.58));border:1px solid rgba(255,255,255,.72);display:flex;align-items:center;justify-content:center;flex:none;color:#2563eb;font-size:20px;font-weight:800;box-shadow:0 8px 22px rgba(15,23,42,.12),0 1px 0 rgba(255,255,255,.85) inset;}
-    .icon-dot{width:12px;height:12px;border-radius:999px;background:#3b82f6;box-shadow:0 0 0 5px rgba(59,130,246,.13),0 0 18px rgba(59,130,246,.36);}
+    .icon img{width:36px;height:36px;object-fit:contain;}
     .content{min-width:0;}
     .eyebrow{font-size:11px;color:rgba(15,23,42,.52);margin-bottom:3px;font-weight:700;}
     .title{font-size:18px;line-height:1.18;font-weight:760;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827;}
@@ -2198,7 +2307,7 @@ function createReminderToastHtml(event, playSound) {
     @keyframes reminder-glow{0%,100%{box-shadow:0 18px 50px rgba(15,23,42,.24),0 1px 0 rgba(255,255,255,.86) inset,0 0 0 1px rgba(15,23,42,.052) inset}50%{box-shadow:0 20px 56px rgba(15,23,42,.29),0 1px 0 rgba(255,255,255,.90) inset,0 0 0 1px rgba(59,130,246,.14) inset,0 0 0 4px rgba(59,130,246,.08)}}
     @media (prefers-reduced-motion:reduce){.toast{animation:none!important}button{transition:none!important}}
     ${themeOverride}
-  </style></head><body><div class="toast"><button class="close" id="close" type="button" aria-label="关闭提醒" title="关闭">×</button><div class="body"><div class="icon"><span class="icon-dot"></span></div><div class="content"><div class="eyebrow">OKNote 提醒</div><div class="title">${title}</div><div class="time">${body}</div></div><div class="actions"><button id="dismiss" type="button">知道了</button></div></div></div><script>
+  </style></head><body><div class="toast"><button class="close" id="close" type="button" aria-label="关闭提醒" title="关闭">×</button><div class="body"><div class="icon"><img src="${appIcon}" alt="OKNote"></div><div class="content"><div class="eyebrow">OKNote 提醒</div><div class="title">${title}</div><div class="time">${body}</div></div><div class="actions"><button id="dismiss" type="button">知道了</button></div></div></div><script>
     (() => {
       const dismiss = () => {
         if (window.electronAPI && window.electronAPI.dismissReminderToast) {
@@ -2275,10 +2384,11 @@ function pulseReminderAttention() {
     } catch {}
   }
 }
-function showReminderToast(event, reminderKey) {
+async function showReminderToast(event, reminderKey) {
   const token = `reminder_${Date.now()}_${++reminderToastSeq}`;
   const index = reminderToastWins.size;
   const toast = new BrowserWindow({
+    title: `${APP_NAME} 提醒`, icon: path.join(ICONS_DIR, 'app-256.png'),
     ...getReminderToastBounds(index),
     frame: false,
     transparent: true,
@@ -2300,13 +2410,8 @@ function showReminderToast(event, reminderKey) {
     },
   });
   hardenWebContents(toast, false);
+  const toastContents = toast.webContents;
   toast.setAlwaysOnTop(true, 'screen-saver', 1);
-  toast.webContents.once('did-fail-load',()=>{if(reminderKey) requeueReminderKey(reminderKey)});
-  void toast.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(createReminderToastHtml(event, !!(event.reminder && event.reminder.playSound)))}`)
-    .catch(()=>{if(reminderKey) requeueReminderKey(reminderKey)});
-  toast.showInactive();
-  toast.moveTop();
-  pulseReminderAttention();
   reminderToastWins.set(token, toast);
   const closeTimer = setTimeout(() => {
     if (!toast.isDestroyed()) toast.close();
@@ -2316,9 +2421,33 @@ function showReminderToast(event, reminderKey) {
     reminderToastWins.delete(token);
     repositionReminderToasts();
   });
-  return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if(settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      toast.removeListener('closed', failed);
+      toastContents.removeListener('did-fail-load', failed);
+      if(!ok && !toast.isDestroyed()) toast.destroy();
+      resolve(ok);
+    };
+    const failed = () => finish(false);
+    const deadline = setTimeout(failed, 5000);
+    toast.once('closed', failed);
+    toast.webContents.once('did-fail-load', failed);
+    void toast.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(createReminderToastHtml(event, !!(event.reminder && event.reminder.playSound)))}`)
+      .then(() => {
+        if(settled || toast.isDestroyed()) return finish(false);
+        toast.showInactive();
+        toast.moveTop();
+        pulseReminderAttention();
+        finish(toast.isVisible());
+      }).catch(failed);
+  });
 }
 function markReminderHistoryEntryRead(id, key) {
+  if(key && reminderDeliveryKeys.has(key)) reminderReadDuringDelivery.add(key);
   const next=reminderHistory.map((entry)=>entry.id===id||(key&&entry.key===key)?{...entry,read:true}:entry);
   if(!next.some((entry,index)=>entry!==reminderHistory[index])) return true;
   if(!saveAppData(REMINDER_HISTORY_FILE,next)) return false;
@@ -2344,68 +2473,84 @@ function requeueReminderKey(key) {
     console.error('requeueReminderKey failed:',error.message);
   }
 }
-function fireEventReminder(event, reminderKey) {
+async function getSystemNotificationSettings() {
+  if (process.platform !== 'darwin') return null;
   try {
-    if (Notification.isSupported()) {
+    return notificationSettingsState(await getMacDesktopBinding().getNotificationSettings());
+  } catch (error) {
+    console.warn('macOS notification settings unavailable:', error.message);
+    return notificationSettingsState();
+  }
+}
+async function isSystemNotificationSuppressed() {
+  if (process.platform !== 'darwin' || (isIsolatedTestInstance && !nativeNotificationTest)) return false;
+  return suppressNotificationFallback(await getSystemNotificationSettings());
+}
+function canUseNativeNotifications() {
+  // Isolated QA exercises the real fallback window without polluting the user's
+  // notification center or Electron's automatically generated Start Menu link.
+  return (!isIsolatedTestInstance || nativeNotificationTest) && nativeNotificationIdentityReady && Notification.isSupported();
+}
+async function deliverNativeReminder(options, onClick) {
+  const notification = new Notification({ icon: path.join(ICONS_DIR, 'app-64.png'), ...options });
+  activeReminderNotifications.add(notification);
+  // Retain objects for click callbacks; bound retention to the history capacity.
+  if(activeReminderNotifications.size > 500) activeReminderNotifications.delete(activeReminderNotifications.values().next().value);
+  notification.once('close', () => activeReminderNotifications.delete(notification));
+  notification.on('click', onClick);
+  const delivered = await waitForNativeNotification(notification);
+  if(!delivered) activeReminderNotifications.delete(notification);
+  return delivered;
+}
+async function fireEventReminder(event, reminderKey) {
+  try {
+    if (canUseNativeNotifications()) {
       const hideContent = appSettings.hideNotificationContent === true;
       const timeLabel = event.isAllDay ? '全天（09:00 提醒）' : (event.startTime || '未设置开始时间');
-      const notification = new Notification({
+      const delivered = await deliverNativeReminder({
         title: hideContent ? 'OKNote 事件提醒' : (event.title || 'OKNote 事件提醒'),
         body: hideContent ? '打开 OKNote 查看详情' : `${event.startDate} ${timeLabel}`,
-        silent: !(event.reminder && event.reminder.playSound),
-        timeoutType: 'never',
-      });
-      notification.on('click', () => {
+        silent: !(event.reminder && event.reminder.playSound), timeoutType: 'never',
+      }, () => {
         markReminderHistoryEntryRead(null, reminderKey);
-        showCalendar();
         openEventEditorInCalendar(event);
       });
-      notification.on('failed',()=>requeueReminderKey(reminderKey));
-      notification.show();
-      return true;
+      if(delivered) return true;
     }
-    if (reminderToastWins.size < 3) return showReminderToast(event,reminderKey);
+  } catch (error) {
+    console.error('Native reminder unavailable:', error.message);
+  }
+  // Re-read after submission: the user may have just denied the first permission prompt.
+  // Keep an unread trigger record, without bypassing their system alert preference.
+  if (await isSystemNotificationSuppressed()) return true;
+  try {
+    if (reminderToastWins.size < 3) return await showReminderToast(event,reminderKey);
   } catch (error) {
     console.error('fireEventReminder failed:', error.message);
   }
   return false;
 }
-function fireReminderSummary(count) {
+async function fireReminderSummary(count, missed = false) {
   if (count <= 0) return true;
+  const title = missed ? 'OKNote 错过的提醒' : 'OKNote 提醒汇总';
+  const body = missed
+    ? `${count} 条提醒在应用未运行或设备休眠期间到期，请查看提醒记录。`
+    : `另有 ${count} 条到期提醒，请查看提醒记录。`;
   try {
-    if (!Notification.isSupported()) return false;
-    const notification = new Notification({
-      title: 'OKNote 提醒汇总',
-      body: `另有 ${count} 条到期提醒，已保存在提醒记录中。`,
-      silent: true,
-      timeoutType: 'never',
-    });
-    notification.on('click', () => showCalendar());
-    notification.show();
-    return true;
+    if (canUseNativeNotifications() && await deliverNativeReminder({title, body, silent: true, timeoutType: 'never'}, showCalendar)) return true;
   } catch (error) {
-    console.error('fireReminderSummary failed:',error.message);
-    return false;
+    console.error('Native reminder summary unavailable:', error.message);
   }
+  if (await isSystemNotificationSuppressed()) return true;
+  try {
+    if(reminderToastWins.size < 3) return await showReminderToast({title, summaryBody: body, reminder: {playSound:false}}, null);
+  } catch (error) {
+    console.error('fireReminderSummary failed:', error.message);
+  }
+  return false;
 }
 function fireMissedReminderSummary(count) {
-  if (count <= 0) return true;
-  try {
-    if (Notification.isSupported()) {
-    const notification = new Notification({
-      title: 'OKNote 错过的提醒',
-      body: `${count} 条提醒在应用未运行或设备休眠期间到期，已保存在提醒记录中。`,
-      silent: true,
-      timeoutType: 'never',
-    });
-    notification.on('click', () => showCalendar());
-    notification.show();
-    }
-  } catch (error) {
-    console.error('fireMissedReminderSummary failed:',error.message);
-  }
-  pulseReminderAttention();
-  return true;
+  return fireReminderSummary(count, true);
 }
 function broadcastReminderHistory() {
   const wins=[winRegistry.calendar,winRegistry.settings,...Object.values(winRegistry.notes)].filter(Boolean);
@@ -2413,7 +2558,9 @@ function broadcastReminderHistory() {
     if(win&&!win.isDestroyed()) win.webContents.send('reminder-history-changed',reminderHistory);
   });
 }
-function checkEventReminders() {
+async function checkEventReminders() {
+  if (!reminderDeliveryReady || reminderScanRunning) return;
+  reminderScanRunning = true;
   try {
     const storedEvents = loadEventsSnapshot(Boolean(eventsLoadError));
     const nowMs = Date.now();
@@ -2430,7 +2577,7 @@ function checkEventReminders() {
     }
     const events = normalized.events.filter((event) => event.reminder && event.reminder.enabled === true);
     if (events.length === 0) {
-      checkpointReminderState(nowMs);
+      reminderRetryPending = !checkpointReminderState(nowMs);
       return;
     }
     const previousCheckMs = Date.parse(reminderState.lastCheckedAt || '');
@@ -2451,20 +2598,20 @@ function checkEventReminders() {
       const firedAt = new Date().toISOString();
       const liveDue = due.filter((item) => !item.missed);
       const missedDue = due.filter((item) => item.missed);
-      const deliveredLive = [];
-      const failedLive = [];
-      for (const item of liveDue) {
-        if (fireEventReminder(item.event,item.key)) deliveredLive.push(item);
-        else failedLive.push(item);
-      }
-      const delivered = [...missedDue,...deliveredLive];
+      for(const item of due) reminderDeliveryKeys.add(item.key);
+      const deliveryResults = await Promise.all(liveDue.map(item => fireEventReminder(item.event,item.key)));
+      const deliveredLive = liveDue.filter((_item,index) => deliveryResults[index]);
+      const failedLive = liveDue.filter((_item,index) => !deliveryResults[index]);
+      const missedDelivered = await fireMissedReminderSummary(missedDue.length);
+      reminderRetryPending = failedLive.length > 0 || !missedDelivered;
+      const delivered = [...(missedDelivered ? missedDue : []),...deliveredLive];
       if (delivered.length === 0) {
         console.warn(`Reminder delivery deferred for ${failedLive.length} event(s)`);
         return;
       }
       const nextState = {
         fired: { ...(reminderState.fired || {}) },
-        lastCheckedAt: failedLive.length > 0
+        lastCheckedAt: reminderRetryPending
           ? (reminderState.lastCheckedAt || new Date(catchUpStartMs).toISOString())
           : firedAt,
       };
@@ -2479,7 +2626,7 @@ function checkEventReminders() {
           startTime: event.startTime,
           isAllDay: event.isAllDay === true,
           firedAt,
-          read: false,
+          read: reminderReadDuringDelivery.has(key),
           ...(missed ? { missed: true, scheduledFor: new Date(reminderMs).toISOString() } : {}),
         };
       });
@@ -2492,22 +2639,27 @@ function checkEventReminders() {
         reminderState = nextState;
         reminderHistory = nextHistory;
         if(failedLive.length>0) console.warn(`Reminder delivery will retry for ${failedLive.length} event(s)`);
-        fireMissedReminderSummary(missedDue.length);
         broadcastReminderHistory();
       } catch (error) {
+        reminderRetryPending = true;
         console.error('persist reminders failed:',error.message);
         broadcastPersistenceFailure('提醒记录未保存','磁盘写入失败，提醒将在下一轮扫描时重试。');
       }
-    } else if (!checkpointReminderState(nowMs)) {
-      broadcastPersistenceFailure('提醒检查点未保存','本轮没有漏掉提醒，但离线检查时间未能写入磁盘，稍后会自动重试。');
+    } else {
+      reminderRetryPending = !checkpointReminderState(nowMs);
+      if(reminderRetryPending) broadcastPersistenceFailure('提醒检查点未保存','本轮没有漏掉提醒，但离线检查时间未能写入磁盘，稍后会自动重试。');
     }
     cleanupReminderState();
   } catch (e) {
+    reminderRetryPending = true;
     console.error('checkEventReminders failed:', e.message);
+  } finally {
+    reminderScanRunning = false;
+    reminderDeliveryKeys.clear();
+    reminderReadDuringDelivery.clear();
   }
 }
 function startReminderScheduler() {
-  loadReminderState();
   if (reminderTimer) clearInterval(reminderTimer);
   checkEventReminders();
   reminderTimer = setInterval(checkEventReminders, REMINDER_POLL_MS);
@@ -2533,6 +2685,18 @@ function mutateEventRecord(request) {
   if (!request || typeof request !== 'object') return eventMutationFailure('invalid', '事件操作格式无效');
   const events = loadEventsSnapshot();
   if(eventsLoadError) return eventMutationFailure('load_failed', eventsLoadError);
+  // Completion is a field-level command against the latest record. Completing
+  // different occurrences in different windows must not overwrite each other.
+  if (request.type === 'complete') {
+    if (!isSafeIdentifier(request.id) || typeof request.completed !== 'boolean') return eventMutationFailure('invalid', '完成状态无效');
+    const existing = events.find((event) => event && event.id === request.id);
+    if (!existing) return eventMutationFailure('not_found', '事件已被删除');
+    const nextEvent = setEventCompletion(existing, request.occurrenceDate, request.completed);
+    if (!nextEvent) return eventMutationFailure('invalid', '循环事件需要有效的实例日期');
+    if (!persistEventsSnapshot(events.map((event) => event?.id === request.id ? nextEvent : event))) return eventMutationFailure('save_failed', '完成状态未能写入磁盘');
+    broadcastEventsChanged({ action: 'event-updated', eventId: request.id });
+    return { ok: true, event: nextEvent, ...getEventsState() };
+  }
   if (hasRevisionConflict(request.expectedRevision, eventsRevision)) {
     return eventMutationFailure('conflict', '事件列表已在其他窗口中变化，请确认最新内容后重试');
   }
@@ -2594,7 +2758,7 @@ function setupIPC(){
   }
   ipcMain.handle('get-settings',()=>({
     themeMode: appSettings.themeMode,
-    autoLaunch: appSettings.autoLaunch,
+    ...getLoginItemSnapshot(),
     startMinimized: appSettings.startMinimized,
     hideNotificationContent: appSettings.hideNotificationContent,
     globalFontFamily: appSettings.globalFontFamily,
@@ -2603,6 +2767,7 @@ function setupIPC(){
     notes: {...appSettings.notes},
   }));
   ipcMain.handle('get-system-fonts',()=>getSystemFonts());
+  ipcMain.handle('get-notification-settings',()=>getSystemNotificationSettings());
   ipcMain.handle('set-auto-launch',(_event,enabled)=>{
     appSettings.autoLaunch=!!enabled;
     const result=applyLoginItemSettings();
@@ -2612,20 +2777,20 @@ function setupIPC(){
     }
     if(!saveSettings()) return {ok:false,enabled:appSettings.autoLaunch,message:'开机启动已设置，但偏好未能写入磁盘'};
     broadcastSettings();
-    return {ok:true,enabled:appSettings.autoLaunch};
+    return {ok:true,enabled:appSettings.autoLaunch,status:result.status,message:result.message};
   });
   ipcMain.handle('set-start-minimized',(_event,enabled)=>{
     const previous=appSettings.startMinimized;
     appSettings.startMinimized=enabled===true;
-    const result=applyLoginItemSettings();
+    const result=process.platform==='darwin'?{ok:true}:applyLoginItemSettings();
     if(!result.ok){
       appSettings.startMinimized=previous;
-      applyLoginItemSettings();
-      return {ok:false,enabled:previous,message:'系统未接受带 --hidden 参数的启动项，设置已恢复'};
+      if(process.platform!=='darwin') applyLoginItemSettings();
+      return {ok:false,enabled:previous,message:'系统未接受静默启动设置，设置已恢复'};
     }
     if(!saveSettings()){
       appSettings.startMinimized=previous;
-      applyLoginItemSettings();
+      if(process.platform!=='darwin') applyLoginItemSettings();
       return {ok:false,enabled:previous,message:'启动项已修改，但偏好写入失败；设置已恢复'};
     }
     broadcastSettings();
@@ -2638,7 +2803,7 @@ function setupIPC(){
       applyThemePreset(sanitizedValue);
     }else if(scope==='global'){
       appSettings[key]=sanitizedValue;
-      if(key==='startMinimized') applyLoginItemSettings();
+      if(key==='startMinimized'&&process.platform!=='darwin') applyLoginItemSettings();
     }else if(appSettings[scope] && typeof appSettings[scope]==='object' && key in appSettings[scope]){
       appSettings[scope][key]=sanitizedValue;
       if(key==='fontSize') applyResponsiveWindowMinimums(scope);
@@ -3134,15 +3299,25 @@ function setupIPC(){
     if(!Number.isFinite(x)||!Number.isFinite(y)) return {ok:false,message:'拖放位置无效'};
     return undockNoteFromCalendar(noteId,noteSnapshot,{x:Math.round(x),y:Math.round(y)});
   });
-  ipcMain.on('begin-dock-drag-preview',(_event,noteSnapshot,x,y)=>{
-    if(!Number.isFinite(x)||!Number.isFinite(y)) return;
-    beginDockDragPreview(noteSnapshot&&typeof noteSnapshot==='object'?noteSnapshot:{},x,y);
+  ipcMain.on('begin-dock-drag-preview',(event,noteSnapshot,x,y,dragId,dockBounds)=>{
+    const owner = winRegistry.calendar;
+    if(!owner || owner.isDestroyed() || event.sender !== owner.webContents) return;
+    if(!Number.isFinite(x)||!Number.isFinite(y)||!isSafeIdentifier(dragId)) return;
+    if(!dockBounds || !['left','top','right','bottom'].every(key=>Number.isFinite(dockBounds[key])) ||
+       dockBounds.right <= dockBounds.left || dockBounds.bottom <= dockBounds.top) return;
+    if(!noteSnapshot || !isSafeIdentifier(noteSnapshot.id)) return;
+    beginDockDragPreview(owner,noteSnapshot,x,y,dragId,dockBounds);
   });
-  ipcMain.on('move-dock-drag-preview',(_event,x,y,outside)=>{
+  ipcMain.on('move-dock-drag-preview',(event,x,y,outside,dragId)=>{
+    if(!dockDragSession || event.sender !== dockDragSession.contents || dragId !== dockDragSession.id) return;
     if(!Number.isFinite(x)||!Number.isFinite(y)) return;
     moveDockDragPreview(x,y,!!outside);
   });
-  ipcMain.on('end-dock-drag-preview',()=>destroyDockDragPreview());
+  ipcMain.on('end-dock-drag-preview',(event,dragId)=>{
+    if(dockDragSession && event.sender === dockDragSession.contents && dragId === dockDragSession.id) {
+      destroyDockDragPreview({notify:false});
+    }
+  });
 
   // ── Calendar height sync ──
   ipcMain.on('calendar-height',(_event,height)=>{
@@ -3179,16 +3354,27 @@ if (!hasSingleInstanceLock) {
     if (app.isReady()) showCalendar();
   });
   app.whenReady().then(async()=>{
-    if(process.platform==='win32') app.setAppUserModelId('com.oknote.app');
-    Menu.setApplicationMenu(null);
+    if(process.platform==='win32') app.setAppUserModelId(notificationAppIdentity.id);
+    const identityReady = isIsolatedTestInstance && !nativeNotificationTest ? Promise.resolve(false)
+      : registerNotificationIdentity(notificationAppIdentity, ICONS_DIR).catch((error) => {
+        console.error('Notification identity registration failed; using OKNote reminder windows:', error.message);
+        return false;
+      });
+    Menu.setApplicationMenu(process.platform === 'darwin'
+      ? Menu.buildFromTemplate(macMenuTemplate({ settings: createSettingsWindow, quit: requestAppQuit, calendar: showCalendar, daily: () => openDailyNoteWindow() }))
+      : null);
     session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     ensureDataDir();
     prepareLegacyLocalData();
     loadSettings();
     loadWindowBounds();
+    // Windows identity registration can still be pending when the renderer
+    // requests history. Load it before exposing IPC or creating any windows.
+    loadReminderState();
     setupIPC();createTray();
-    if(!process.argv.includes('--hidden')) createCalendarWindow();
+    const loginState = process.platform === 'darwin' ? app.getLoginItemSettings() : null;
+    if(!shouldStartHidden(appSettings, loginState)) createCalendarWindow();
     noteCacheHydrationPromise=(async()=>{
       try {
         migrateLegacyNotesFile();
@@ -3222,10 +3408,14 @@ if (!hasSingleInstanceLock) {
     })();
     try { await noteCacheHydrationPromise; }
     finally { noteCacheHydrationPromise=null; }
-    applyLoginItemSettings();
-    startReminderScheduler();
+    if (app.isQuitting) return;
+    if(process.platform !== 'darwin') applyLoginItemSettings();
     // Start async font loading in background (non-blocking)
     loadSystemFontsAsync();
+    nativeNotificationIdentityReady = await identityReady;
+    if (app.isQuitting) return;
+    reminderDeliveryReady = true;
+    startReminderScheduler();
     if(!app.isPackaged&&process.env.OKNOTE_SMOKE_TEST==='1'){
       fs.writeFileSync(path.join(USER_DATA_DIR,'.smoke-ready'),new Date().toISOString(),'utf8');
       setTimeout(()=>{forceAppQuit=true;app.isQuitting=true;app.quit()},120);
@@ -3245,9 +3435,11 @@ if (!hasSingleInstanceLock) {
     settingsSaveTimer=null;
     settingsBroadcastTimer=null;
     saveSettings();
-    if(!eventsLoadError) checkpointReminderState(Date.now(), true);
+    // Until the first scan, advancing the checkpoint would skip due reminders
+    // on the next launch. Keep both its original time and deduplication keys.
+    if(reminderDeliveryReady&&!eventsLoadError&&!reminderScanRunning&&!reminderRetryPending) checkpointReminderState(Date.now(), true);
     stopReminderScheduler();
     saveWindowBounds();
   });
-  app.on('activate',()=>{createCalendarWindow()});
+  app.on('activate',()=>{showCalendar()});
 }

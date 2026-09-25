@@ -9,7 +9,7 @@ const { stopChild } = require('./lib/electron-test-driver.cjs');
 const { getNoteRevision } = require('../electron/note-persistence.cjs');
 const root = path.join(__dirname, '..');
 const runtime = process.env.OKNOTE_LEGACY_FIXTURE_ELECTRON || process.env.OKNOTE_ELECTRON_EXECUTABLE
-  || path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
+  || require('electron');
 const executable = process.env.OKNOTE_ELECTRON_EXECUTABLE || runtime;
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'oknote-legacy-upgrade-'));
 const source = process.env.OKNOTE_UPGRADE_SOURCE_PROFILE;

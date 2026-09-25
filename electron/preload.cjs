@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Settings ──
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  getNotificationSettings: () => ipcRenderer.invoke('get-notification-settings'),
   setSetting: (windowType, key, value) => ipcRenderer.send('set-setting', windowType, key, value),
   onSettingsChanged: (callback) => {
     const handler = (_event, settings) => callback(settings);
@@ -120,9 +121,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('note-dock-hover', handler);
     return () => ipcRenderer.removeListener('note-dock-hover', handler);
   },
-  beginDockDragPreview: (noteSnapshot, x, y) => ipcRenderer.send('begin-dock-drag-preview', noteSnapshot, x, y),
-  moveDockDragPreview: (x, y, outside) => ipcRenderer.send('move-dock-drag-preview', x, y, outside),
-  endDockDragPreview: () => ipcRenderer.send('end-dock-drag-preview'),
+  beginDockDragPreview: (noteSnapshot, x, y, dragId, dockBounds) => ipcRenderer.send('begin-dock-drag-preview', noteSnapshot, x, y, dragId, dockBounds),
+  moveDockDragPreview: (x, y, outside, dragId) => ipcRenderer.send('move-dock-drag-preview', x, y, outside, dragId),
+  endDockDragPreview: (dragId) => ipcRenderer.send('end-dock-drag-preview', dragId),
+  onDockDragEnded: (callback) => {
+    const handler = (_event, result) => callback(result);
+    ipcRenderer.on('dock-drag-ended', handler);
+    return () => ipcRenderer.removeListener('dock-drag-ended', handler);
+  },
 
   // ── Edge auto-hide state ──
   onToggleCollapse: (callback) => {

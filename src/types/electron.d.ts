@@ -11,12 +11,22 @@ export interface PerWindowSettings {
 export interface AllSettings {
   themeMode: 'dark' | 'light';
   autoLaunch: boolean;
+  autoLaunchStatus?: string;
+  autoLaunchMessage?: string;
   startMinimized: boolean;
   hideNotificationContent: boolean;
   globalFontFamily: string;
   globalFontSize: number;
   calendar: PerWindowSettings;
   notes: PerWindowSettings;
+}
+
+export interface SystemNotificationSettings {
+  authorization: 'not-determined' | 'denied' | 'authorized' | 'provisional' | 'unknown';
+  alerts: 'not-supported' | 'disabled' | 'enabled' | 'unknown';
+  alertStyle: 'none' | 'banner' | 'alert' | 'unknown';
+  notificationCenter: 'not-supported' | 'disabled' | 'enabled' | 'unknown';
+  sound: 'not-supported' | 'disabled' | 'enabled' | 'unknown';
 }
 
 export interface EventsState {
@@ -80,6 +90,7 @@ export interface TagMutationResult {
 }
 
 export type EventMutationRequest =
+  | { type: 'complete'; id: string; occurrenceDate?: string; completed: boolean }
   | { type: 'create' | 'update'; event: unknown; expectedRevision?: number; expectedUpdatedAt?: string }
   | { type: 'delete'; id: string; expectedRevision?: number; expectedUpdatedAt?: string };
 
@@ -88,6 +99,7 @@ export interface ElectronAPI {
   platform: string;
 
   getSettings: () => Promise<AllSettings>;
+  getNotificationSettings: () => Promise<SystemNotificationSettings | null>;
   setSetting: (scope: string, key: string, value: unknown) => void;
   onSettingsChanged: (callback: (settings: AllSettings) => void) => () => void;
   setReducedMotion: (reduced: boolean) => void;
@@ -116,7 +128,7 @@ export interface ElectronAPI {
   markReminderHistoryRead: (id?: string) => Promise<boolean>;
   onReminderHistoryChanged: (callback: (history: Array<{ id: string; eventId: string; title: string; startDate: string; startTime?: string; isAllDay: boolean; firedAt: string; read: boolean; missed?: boolean; scheduledFor?: string }>) => void) => () => void;
   onPersistenceFailure: (callback: (issue: { title?: string; message?: string }) => void) => () => void;
-  setAutoLaunch: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean; message?: string }>;
+  setAutoLaunch: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean; status?: string; message?: string }>;
   setStartMinimized: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean; message?: string }>;
   openEventEditor: (eventData: unknown) => void;
   onOpenEventEditor: (callback: (eventData: unknown) => void) => () => void;
@@ -152,9 +164,10 @@ export interface ElectronAPI {
   moveNoteWindowDrag: (screenX: number, screenY: number) => void;
   endNoteWindowDrag: (screenX: number, screenY: number, moved: boolean) => void;
   onNoteDockHover: (callback: (inside: boolean) => void) => () => void;
-  beginDockDragPreview: (noteSnapshot: unknown, x: number, y: number) => void;
-  moveDockDragPreview: (x: number, y: number, outside: boolean) => void;
-  endDockDragPreview: () => void;
+  beginDockDragPreview: (noteSnapshot: unknown, x: number, y: number, dragId: string, dockBounds: { left: number; top: number; right: number; bottom: number }) => void;
+  moveDockDragPreview: (x: number, y: number, outside: boolean, dragId: string) => void;
+  endDockDragPreview: (dragId: string) => void;
+  onDockDragEnded: (callback: (result: { dragId: string; x: number; y: number; canceled: boolean }) => void) => () => void;
 
   // Edge auto-hide
   onToggleCollapse: (callback: (collapsed: boolean) => void) => () => void;

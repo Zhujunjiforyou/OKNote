@@ -449,6 +449,11 @@ export function normalizeCalendarEvent(raw: unknown): CalendarEvent | null {
     ...(endTime ? { endTime } : {}),
     isAllDay,
     color: normalizeHexColor(raw.color),
+    ...(isRecord(raw.completion) ? { completion: {
+      completed: raw.completion.completed === true,
+      occurrenceDates: [...new Set((Array.isArray(raw.completion.occurrenceDates) ? raw.completion.occurrenceDates : [])
+        .filter(isDateKey))].sort().slice(-20000),
+    } } : {}),
     ...(isSafeIdentifier(raw.tagId) ? { tagId: raw.tagId } : {}),
     ...(recurrence ? { recurrence } : {}),
     ...(reminder ? { reminder } : {}),
@@ -534,22 +539,46 @@ export interface CalendarTodoPreview {
   noteId: string
   content: string
   sortOrder: number
+  todoDate: string
+  isCompleted: boolean
+  noteTitle: string
+  noteColor: string
+  noteType: Note['noteType']
 }
 
-export function buildDailyTodoItemsByDate(notes: Note[], rangeStart: string, rangeEnd: string): Map<string, CalendarTodoPreview[]> {
+export function isEventCompleted(event: CalendarEvent, legacyKeys?: ReadonlySet<string>, occurrenceDate = event.occurrenceDate || event.startDate): boolean {
+  if (event.completion) return event.recurrence
+    ? event.completion.occurrenceDates.includes(occurrenceDate)
+    : event.completion.completed
+  return legacyKeys?.has(event.recurrence ? `${event.seriesId || event.id}__${occurrenceDate}` : event.id) || false
+}
+
+export function legacyCompletedEventKeys(notes: Note[]): Set<string> {
+  return new Set(notes.filter((note) => note.noteType === 'daily').flatMap((note) => note.dailyTodo?.completedEventOccurrences || []))
+}
+
+export function isTodoOverdue(item: { todoDate?: string; isCompleted: boolean }, today: string): boolean {
+  return !item.isCompleted && isDateKey(item.todoDate) && item.todoDate < today
+}
+
+export function buildDailyTodoItemsByDate(notes: Note[], rangeStart: string, rangeEnd: string, includeCompleted = false): Map<string, CalendarTodoPreview[]> {
   const map = new Map<string, CalendarTodoPreview[]>()
   const supportedRange = getSupportedDateRange(rangeStart, rangeEnd)
   if (!supportedRange) return map
 
   for (const note of notes) {
-    if (note.noteType !== 'daily') continue
     for (const item of note.items || []) {
-      if (item.isCompleted || !isDateKey(item.todoDate)) continue
+      if ((!includeCompleted && item.isCompleted) || !isDateKey(item.todoDate)) continue
       if (item.todoDate < supportedRange.start || item.todoDate > supportedRange.end) continue
       const items = map.get(item.todoDate) || []
       items.push({
         id: item.id,
         noteId: note.id,
+        noteTitle: note.title,
+        noteColor: note.color,
+        noteType: note.noteType,
+        todoDate: item.todoDate,
+        isCompleted: item.isCompleted,
         content: item.content.trim() || '未命名待办',
         sortOrder: Number.isFinite(item.sortOrder) ? item.sortOrder : items.length,
       })
@@ -558,7 +587,7 @@ export function buildDailyTodoItemsByDate(notes: Note[], rangeStart: string, ran
   }
 
   for (const items of map.values()) {
-    items.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
+    items.sort((a, b) => Number(a.isCompleted) - Number(b.isCompleted) || a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
   }
   return map
 }

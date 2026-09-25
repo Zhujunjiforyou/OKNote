@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import { useAppStore } from '@/stores/app.store'
 import { useTagStore } from '@/stores/tag.store'
 import type { CalendarEvent } from '@/types/calendar.types'
 import type { Note } from '@/types/notes.types'
-import { Bell, ChevronLeft, ChevronRight, MoreHorizontal, Plus, X, Settings } from 'lucide-react'
+import { Bell, ChevronLeft, ChevronRight, MoreHorizontal, Plus, X, Settings } from '@/components/ui/icons'
 import { endOfWeek, format, startOfWeek } from 'date-fns'
 import { MonthGrid } from '@/components/calendar/MonthGrid'
 import { clampFontSize, getAdaptiveDisplayFontSize } from '@/lib/typography'
@@ -15,7 +16,7 @@ import { EventDetailModal } from '@/components/calendar/EventDetailModal'
 import { DayEventsModal } from '@/components/calendar/DayEventsModal'
 import { DockArea } from '@/components/dock/DockArea'
 import type { DockedNoteDraftKind } from '@/components/dock/DockedNoteCard'
-import { ensureReadableTextColor, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeCalendarEvent, normalizeCalendarEvents, normalizeHexColor, normalizeNote } from '@/lib/utils'
+import { ensureReadableTextColor, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeCalendarEvents, normalizeNote } from '@/lib/utils'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 import { ReminderCenter, normalizeReminderHistoryEntries, type ReminderHistoryEntry } from '@/components/calendar/ReminderCenter'
@@ -128,6 +129,7 @@ export function CalendarWindow() {
 
   const { settings, themeMode } = useAppSettings('calendar')
   const [isDayEventsOpen, setIsDayEventsOpen] = useState(false)
+  const openDayEvents = useCallback(() => setIsDayEventsOpen(true), [])
   const [showPicker, setShowPicker] = useState(false)
   const pickerDialogRef = useDialogFocusTrap(showPicker)
   const [pickerYearInput, setPickerYearInput] = useState(() => String(new Date().getFullYear()))
@@ -137,6 +139,7 @@ export function CalendarWindow() {
   const [showReminderCenter, setShowReminderCenter] = useState(false)
   const [eventFormDirty, setEventFormDirty] = useState(false)
   const [dockDrafts, setDockDrafts] = useState<Record<string, DockedNoteDraftKind>>({})
+  const [dayAgendaDirty, setDayAgendaDirty] = useState(false)
   const [reminderHistory, setReminderHistory] = useState<ReminderHistoryEntry[]>([])
   const [calendarCollapsed, setCalendarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month')
@@ -161,14 +164,11 @@ export function CalendarWindow() {
   const preferredDockHeightRef = useRef(getPreferredDockHeight())
   const calendarCollapsedRef = useRef(false)
   const dockResizeRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null)
+  const dockResizeFrameRef = useRef<number | null>(null)
   const tags = useTagStore((s) => s.tags)
-  const notes = useNotesStore((s) => s.notes)
   const todayKey = useCurrentDateKey()
   const previousTodayKeyRef = useRef(todayKey)
-  const existingViewNoteTagIds = useMemo(
-    () => new Set(notes.flatMap(getViewNoteTagIds)),
-    [notes],
-  )
+  const existingViewNoteTagIds = useNotesStore(useShallow((s) => new Set(s.notes.flatMap(getViewNoteTagIds))))
 
   useEffect(() => {
     const previousToday = previousTodayKeyRef.current
@@ -188,7 +188,8 @@ export function CalendarWindow() {
   const calendarDensity = viewportDensity
   const effectiveFontSize = getAdaptiveDisplayFontSize(requestedFontSize)
   const calendarGridMinHeight = Math.max(360, Math.ceil(effectiveFontSize * 13.2))
-  const calendarGridMinWidth = Math.max(560, Math.ceil(effectiveFontSize * 21))
+  // Keep the date and its count readable together; a narrow viewport can scroll.
+  const calendarGridMinWidth = Math.max(420, Math.ceil(effectiveFontSize * 21))
   const isCompactDensity = calendarDensity < 0.92
   const isSmallType = requestedFontSize <= 11
   const isLargeType = requestedFontSize >= 19
@@ -228,12 +229,13 @@ export function CalendarWindow() {
   useEffect(() => {
     if (!window.electronAPI?.isElectron) return
     const entries: Array<WindowDraftKind | WindowDraftEntry> = eventFormDirty ? ['event-form'] : []
+    if (dayAgendaDirty) entries.push('todo-edit')
     for (const [key, kind] of Object.entries(dockDrafts)) {
       const noteId = key.split(':', 1)[0]
       entries.push(noteId ? { kind, noteId } : kind)
     }
     window.electronAPI.setWindowDraftState(entries)
-  }, [dockDrafts, eventFormDirty])
+  }, [dockDrafts, eventFormDirty, dayAgendaDirty])
 
   useEffect(() => () => {
     window.electronAPI?.setWindowDraftState([])
@@ -366,8 +368,14 @@ export function CalendarWindow() {
       if (!titlebar || !monthNav) return
 
       const titlebarRect = titlebar.getBoundingClientRect()
+      const titlebarStyle = window.getComputedStyle(titlebar)
+      const paddingLeft = Number.parseFloat(titlebarStyle.paddingLeft) || 0
+      const paddingRight = Number.parseFloat(titlebarStyle.paddingRight) || 0
+      const rightActions = titlebar.querySelector<HTMLElement>('.cal-right-actions')
+      const rightWidth = rightActions?.scrollWidth || 100
+      const navWidth = Math.max(72, titlebarRect.width - paddingLeft - paddingRight - 2 * (rightWidth + 8))
+      monthNav.style.setProperty('--cal-month-nav-max-width', `${navWidth}px`)
       const monthRect = monthNav.getBoundingClientRect()
-      const paddingLeft = Number.parseFloat(window.getComputedStyle(titlebar).paddingLeft) || 0
       const leftAvailable = Math.max(0, monthRect.left - titlebarRect.left - paddingLeft - 2)
       const gap = 4
       const widths = [
@@ -413,7 +421,10 @@ export function CalendarWindow() {
   }, [effectiveFontSize, effectiveViewMode])
 
   useEffect(() => {
-    const updateViewportSize = () => setViewportSize(getViewportSize())
+    const updateViewportSize = () => {
+      const next = getViewportSize()
+      setViewportSize((current) => current.width === next.width && current.height === next.height ? current : next)
+    }
     updateViewportSize()
     window.addEventListener('resize', updateViewportSize)
     return () => window.removeEventListener('resize', updateViewportSize)
@@ -469,11 +480,7 @@ export function CalendarWindow() {
         if (payload?.note && typeof payload.note === 'object') {
           const normalized = normalizePersistedNote(payload.note, '')
           if (normalized && normalized.noteType !== 'view') {
-            const current = useNotesStore.getState().notes
-            useNotesStore.getState().loadNotes([
-              normalized,
-              ...current.filter((note) => note.id !== normalized.id && (normalized.noteType !== 'daily' || note.noteType !== 'daily')),
-            ])
+            useNotesStore.getState().receiveNote(normalized)
             return
           }
         }
@@ -580,8 +587,8 @@ export function CalendarWindow() {
 
   const lightBg = isLightColor(settings.backgroundColor)
   const holidayStripeColor = lightBg
-    ? 'rgba(220, 38, 38, 0.18)'
-    : 'rgba(255, 126, 126, 0.24)'
+    ? 'rgba(220, 38, 38, 0.10)'
+    : 'rgba(255, 126, 126, 0.13)'
   const holidayTextColor = lightBg
     ? 'rgba(180, 30, 30, 0.85)'
     : 'rgba(255, 140, 140, 0.85)'
@@ -703,12 +710,24 @@ export function CalendarWindow() {
     const nextHeight = clampDockHeight(drag.startHeight - (event.clientY - drag.startY))
     dockHeightRef.current = nextHeight
     preferredDockHeightRef.current = nextHeight
-    setDockHeight(nextHeight)
+    if (dockResizeFrameRef.current == null) {
+      dockResizeFrameRef.current = window.requestAnimationFrame(() => {
+        dockResizeFrameRef.current = null
+        // The viewport may shrink before this queued frame is committed.
+        setDockHeight(clampDockHeight(preferredDockHeightRef.current))
+      })
+    }
   }
   const finishDockResize = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dockResizeRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dockResizeRef.current = null
+    if (dockResizeFrameRef.current != null) {
+      window.cancelAnimationFrame(dockResizeFrameRef.current)
+      dockResizeFrameRef.current = null
+    }
+    // A click without movement must not restore an oversized saved preference.
+    setDockHeight(clampDockHeight(preferredDockHeightRef.current))
     document.body.classList.remove('resizing-dock')
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
     window.localStorage.setItem(DOCK_HEIGHT_STORAGE_KEY, String(preferredDockHeightRef.current))
@@ -744,6 +763,10 @@ export function CalendarWindow() {
     window.addEventListener('resize', handleResize)
     return () => {
       window.removeEventListener('resize', handleResize)
+      if (dockResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(dockResizeFrameRef.current)
+        dockResizeFrameRef.current = null
+      }
       document.body.classList.remove('resizing-dock')
     }
   }, [clampDockHeight])
@@ -1180,7 +1203,7 @@ export function CalendarWindow() {
       {/* Content */}
       <div className="cal-main-content relative z-[30] flex-1 flex flex-col overflow-hidden px-3 pb-3">
         <div className="calendar-grid-scroll flex-1 overflow-hidden">
-          <MonthGrid compact viewMode={effectiveViewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} todayKey={todayKey} onDayDoubleClick={() => setIsDayEventsOpen(true)} />
+          <MonthGrid compact viewMode={effectiveViewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} todayKey={todayKey} onDayDoubleClick={openDayEvents} />
         </div>
       </div>
 
@@ -1214,7 +1237,7 @@ export function CalendarWindow() {
 
       {/* Modals */}
       <EventDetailModal />
-      <DayEventsModal isOpen={isDayEventsOpen} onClose={() => setIsDayEventsOpen(false)} />
+      <DayEventsModal isOpen={isDayEventsOpen} onClose={() => setIsDayEventsOpen(false)} onDirtyChange={setDayAgendaDirty} />
       {isEventFormOpen && (
         <EventForm
           onClose={closeEventForm}

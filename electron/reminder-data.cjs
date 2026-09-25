@@ -1,5 +1,6 @@
 const { isPlainRecord, isSafeIdentifier, isDateKey, isTimeKey } = require('./data-rules.cjs');
 const { normalizeRecurrence, normalizeEventReminder } = require('./event-rules.cjs');
+const { normalizeCompletion } = require('./event-completion.cjs');
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function normalizeReminderHistory(rawHistory, limit = 500) {
@@ -69,6 +70,7 @@ function normalizeReminderEvent(raw) {
     ...(startTime ? { startTime } : {}),
     ...(endTime ? { endTime } : {}),
     isAllDay,
+    ...(normalizeCompletion(raw.completion) ? { completion: normalizeCompletion(raw.completion) } : {}),
     ...(typeof raw.color === 'string' ? { color: raw.color } : {}),
     ...(isSafeIdentifier(raw.tagId) ? { tagId: raw.tagId } : {}),
     ...(recurrence ? { recurrence } : {}),

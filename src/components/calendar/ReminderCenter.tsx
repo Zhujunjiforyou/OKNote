@@ -1,6 +1,7 @@
 import { useEffect, type CSSProperties } from 'react'
-import { Bell, CalendarClock, CheckCheck, X } from 'lucide-react'
+import { Bell, CalendarClock, CheckCheck, X } from '@/components/ui/icons'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { SystemNotificationStatus } from '@/components/SystemNotificationStatus'
 
 export interface ReminderHistoryEntry {
   id: string
@@ -104,6 +105,7 @@ export function ReminderCenter({ open, entries, onClose, onMarkAllRead, onOpenEv
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {window.electronAPI?.platform === 'darwin' && <div className="px-3"><SystemNotificationStatus explainHistory /></div>}
           {entries.length === 0 ? (
             <div className="flex min-h-48 flex-col items-center justify-center px-5 text-center text-muted-foreground">
               <CalendarClock size={24} aria-hidden="true" />

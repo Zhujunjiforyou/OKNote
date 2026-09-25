@@ -1,12 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import { useTagStore } from '@/stores/tag.store'
-import { Clock, ListTodo, Repeat } from 'lucide-react'
+import { Clock, ListTodo, Repeat } from '@/components/ui/icons'
 import { useAppSettings } from '@/hooks/useAppSettings'
-import { buildDailyTodoItemsByDate, filterEventsByDate, getEventInstanceKey, isLightColor } from '@/lib/utils'
+import { buildDailyTodoItemsByDate, filterEventsByDate, getEventInstanceKey, isLightColor, isEventCompleted, isTodoOverdue, legacyCompletedEventKeys } from '@/lib/utils'
+
+import { EventCompletionButton } from '@/components/calendar/EventCompletionButton'
+import { openTodoSource } from '@/lib/todo-navigation'
+import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 
 function formatRemaining(diffMs: number): string {
   const absMs = Math.abs(diffMs)
@@ -83,10 +88,11 @@ function getDeadlineStyle(tone: DeadlineTone, lightBg: boolean, mutedText: strin
   }
 }
 
-export function ViewNotePanel() {
+export const ViewNotePanel = memo(function ViewNotePanel() {
+  const todayKey = useCurrentDateKey()
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
-  const notes = useNotesStore((s) => s.notes)
+  const notes = useNotesStore(useShallow((s) => s.notes.filter((note) => note.items?.some((item) => item.todoDate) || note.dailyTodo?.completedEventOccurrences?.length)))
   const viewNoteTagFilter = useCalendarStore((s) => s.viewNoteTagFilter)
   const toggleViewNoteTag = useCalendarStore((s) => s.toggleViewNoteTag)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
@@ -133,13 +139,15 @@ export function ViewNotePanel() {
   }, [events, displayDate, viewNoteTagFilter])
 
   const dailyTodos = useMemo(() => {
-    return buildDailyTodoItemsByDate(notes, displayDate, displayDate).get(displayDate) || []
+    return buildDailyTodoItemsByDate(notes, displayDate, displayDate, true).get(displayDate) || []
   }, [displayDate, notes])
 
+  const completedKeys = useMemo(() => legacyCompletedEventKeys(notes), [notes])
   const itemCount = filteredEvents.length + dailyTodos.length
 
   return (
     <div
+      id="dock-summary-panel"
       className="view-note-panel relative flex flex-col shrink-0 border-r"
       style={{ borderColor: panelBorder, backgroundColor: panelBg, color: readableText }}
     >
@@ -203,33 +211,33 @@ export function ViewNotePanel() {
               <button
                 key={`todo-${todo.noteId}-${todo.id}`}
                 type="button"
-                onClick={() => window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办', activeDate: displayDate })}
+                onClick={() => { void openTodoSource(todo) }}
                 className="view-todo-item grid w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 rounded-md px-2.5 py-2 text-left transition-colors"
                 style={{
                   backgroundColor: lightBg ? 'rgba(22,163,74,0.09)' : 'rgba(34,197,94,0.10)',
                   border: `1px solid ${lightBg ? 'rgba(22,163,74,0.20)' : 'rgba(74,222,128,0.20)'}`,
                   color: readableText,
                 }}
-                title={`打开每日待办：${todo.content}`}
+                title={`打开待办：${todo.content}`}
               >
                 <ListTodo
                   className="calendar-todo-icon"
                   aria-hidden="true"
                 />
                 <span className="min-w-0">
-                  <span className="block truncate text-[0.76em] font-medium leading-tight">{todo.content}</span>
-                  <span className="mt-0.5 block text-[0.62em] leading-tight" style={{ color: mutedText }}>每日待办</span>
+                  <span className={`block truncate text-[0.76em] font-medium leading-tight ${todo.isCompleted ? 'task-completed' : isTodoOverdue(todo, todayKey) ? 'task-overdue' : ''}`}>{todo.content}</span>
+                  <span className="mt-0.5 block text-[0.62em] leading-tight" style={{ color: mutedText }}>{todo.noteType === 'daily' ? '每日待办' : todo.noteTitle}</span>
                 </span>
               </button>
             ))}
             {filteredEvents.map((ev) => {
             const tag = ev.tagId ? tags.find((t) => t.id === ev.tagId) : null
-            const deadline = getDeadlineStatus(ev, displayDate, now)
+            const completed = isEventCompleted(ev, completedKeys)
+            const deadline = completed ? null : getDeadlineStatus(ev, displayDate, now)
             const isRecurring = !!ev.recurrence
             return (
-              <button
+              <div
                 key={getEventInstanceKey(ev)}
-                onClick={() => selectEvent(ev.seriesId || ev.id, ev.occurrenceDate || ev.startDate)}
                 className={`view-event-item w-full text-left px-2.5 py-2 rounded-md transition-colors grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 group ${isRecurring ? 'view-event-item-recurring' : ''}`}
                 style={{
                   backgroundColor: isRecurring ? (lightBg ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.075)') : chipBg,
@@ -238,9 +246,9 @@ export function ViewNotePanel() {
                   ['--event-color' as string]: ev.color,
                 }}
               >
-                <div className="view-event-dot mt-[0.32em] w-2 h-2 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: ev.color, boxShadow: '0 0 0 1px rgba(255,255,255,0.65), 0 0 0 2px rgba(0,0,0,0.10)' }} />
-                <div className="flex-1 min-w-0">
-                  <div className="view-event-title text-[0.76em] truncate leading-tight font-medium">{ev.title}</div>
+                <EventCompletionButton event={ev} completed={completed} />
+                <button type="button" className="flex-1 min-w-0 text-left" onClick={() => selectEvent(ev.seriesId || ev.id, ev.occurrenceDate || ev.startDate)} aria-label={`打开事件：${ev.title}`}>
+                  <div className={`view-event-title text-[0.76em] truncate leading-tight font-medium ${completed ? 'task-completed' : ''}`}>{ev.title}</div>
                   <div className="view-event-meta flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[0.65em] mt-0.5" style={{ color: mutedText }}>
                     <Clock size={9} />
                     {isRecurring && (
@@ -252,7 +260,8 @@ export function ViewNotePanel() {
                     <span>{ev.isAllDay ? '全天' : ev.startTime || '未设时间'}</span>
                     {tag && (
                       <span
-                        className="px-1 rounded text-[0.85em] max-w-[60px] truncate"
+                        className="view-event-tag shrink-0 max-w-full px-1 rounded text-[0.85em] truncate"
+                        title={tag.name}
                         style={{
                           backgroundColor: `color-mix(in srgb, ${tag.color} 14%, transparent)`,
                           border: `1px solid color-mix(in srgb, ${tag.color} 30%, transparent)`,
@@ -272,8 +281,8 @@ export function ViewNotePanel() {
                       </span>
                     )}
                   </div>
-                </div>
-              </button>
+                </button>
+              </div>
             )
             })}
           </>
@@ -281,4 +290,4 @@ export function ViewNotePanel() {
       </div>
     </div>
   )
-}
+})

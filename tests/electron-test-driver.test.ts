@@ -13,6 +13,7 @@ const { DevToolsClient, stopChild } = require('../scripts/lib/electron-test-driv
   DevToolsClient: new (url: string, timeoutMs?: number) => Client
   stopChild: (child: unknown) => Promise<void>
 }
+const { key } = require('../scripts/lib/electron-qa-session.cjs')
 
 class TestSocket extends EventTarget {
   static OPEN = 1
@@ -38,6 +39,20 @@ async function connected() {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('bounded Electron test transport', () => {
+  it('waits for renderer focus before sending a Space key to a newly foregrounded window', async () => {
+    let checks = 0
+    let focused = false
+    const client = {
+      evaluate: vi.fn(async () => { focused = ++checks > 1; return focused }),
+      call: vi.fn(async (method: string) => {
+        if (method === 'Input.dispatchKeyEvent') expect(focused, 'keyboard input must wait for focus').toBe(true)
+      }),
+    }
+    await key(client, ' ')
+    expect(client.evaluate).toHaveBeenCalledTimes(2)
+    expect(client.call).toHaveBeenCalledWith('Input.dispatchKeyEvent', {type:'keyDown',key:' ',code:'Space',windowsVirtualKeyCode:32})
+    expect(client.call).toHaveBeenCalledWith('Input.dispatchKeyEvent', {type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32})
+  })
   it('recognizes signal-terminated children as stopped even without an exit code', async () => {
     const child = { exitCode: null, signalCode: 'SIGTERM', once: vi.fn(), kill: vi.fn() }
     await stopChild(child)

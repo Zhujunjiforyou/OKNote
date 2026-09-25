@@ -1,9 +1,10 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
+import { lazy, memo, Suspense, useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence } from 'framer-motion'
 import { useNotesStore } from '@/stores/notes.store'
 import { useTagStore } from '@/stores/tag.store'
-import { Plus, MoreHorizontal, X, GripHorizontal, Settings, Tag } from 'lucide-react'
+import { Plus, MoreHorizontal, X, GripHorizontal, Settings, Tag } from '@/components/ui/icons'
+import { defaultSystemFont } from '@/lib/platform'
 import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
@@ -19,6 +20,21 @@ import type { WindowDraftEntry, WindowDraftKind } from '@/types/electron'
 const DailyTodoPanel = lazy(() => import('@/components/notes/DailyTodoPanel').then((module) => ({ default: module.DailyTodoPanel })))
 
 interface NoteWindowProps { noteId: string; isNew?: boolean }
+
+const NoteTodoList = memo(function NoteTodoList({ items, noteId, noteColor, onDraftChange }: {
+  items: Note['items']
+  noteId: string
+  noteColor: string
+  onDraftChange: (itemId: string, dirty: boolean) => void
+}) {
+  return (
+    <AnimatePresence initial={false}>
+      {items.map((item) => (
+        <TodoItem key={item.id} item={item} noteId={noteId} noteColor={noteColor} onDraftChange={onDraftChange} />
+      ))}
+    </AnimatePresence>
+  )
+})
 
 function createDefaultNote(noteId: string): Note {
   const ts = new Date().toISOString()
@@ -38,6 +54,18 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const deleteNote = useNotesStore((s) => s.deleteNote)
   const addItem = useNotesStore((s) => s.addItem)
   const loadNotes = useNotesStore((s) => s.loadNotes)
+
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return
+    return window.electronAPI.onNotesChanged((payload) => {
+      if (payload?.note && typeof payload.note === 'object') {
+        useNotesStore.getState().receiveNote(normalizeNote(payload.note))
+      } else if (payload?.deletedId) {
+        const state = useNotesStore.getState()
+        state.loadNotes(state.notes.filter((note) => note.id !== payload.deletedId))
+      }
+    })
+  }, [])
 
   const { settings, loaded } = useAppSettings('notes')
   const note = notes.find((n) => n.id === noteId)
@@ -105,7 +133,10 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
 
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
-  const titleInputRef = useRef<HTMLInputElement>(null)
+  const titleInputRef = useCallback((input: HTMLInputElement | null) => {
+    input?.focus()
+    input?.select()
+  }, [])
 
   const [newTodo, setNewTodo] = useState('')
   const [isHiding, setIsHiding] = useState(false)
@@ -254,7 +285,6 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const startEditTitle = () => {
     setTitleDraft(note.title)
     setEditingTitle(true)
-    setTimeout(() => titleInputRef.current?.select(), 50)
   }
 
   const saveTitle = () => {
@@ -394,7 +424,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
   const bgHex = noteSurfaceColor.replace('#', '')
   const noteOpacity = settings.backgroundOpacity
   const bgWithAlpha = `#${bgHex}${Math.round(noteOpacity * 255).toString(16).padStart(2, '0')}`
-  const noteFont = settings.fontFamily || 'Microsoft YaHei'
+  const noteFont = settings.fontFamily || defaultSystemFont
   const requestedNoteFontSize = clampFontSize(settings.fontSize || 14)
   const noteFontSize = getAdaptiveDisplayFontSize(requestedNoteFontSize)
   const safeItems = Array.isArray(note.items) ? note.items : ([] as Note['items'])
@@ -619,16 +649,7 @@ export function NoteWindow({ noteId, isNew }: NoteWindowProps) {
         </Suspense>
       ) : (
         <div className="relative flex-1 px-3 py-1.5 space-y-1 overflow-y-auto overflow-x-hidden">
-          <AnimatePresence initial={false}>
-            {safeItems.map((item) => (
-              <TodoItem
-                key={item.id}
-                item={item}
-                note={note}
-                onDraftChange={handleTodoDraftChange}
-              />
-            ))}
-          </AnimatePresence>
+          <NoteTodoList items={safeItems} noteId={note.id} noteColor={note.color} onDraftChange={handleTodoDraftChange} />
           {safeItems.length === 0 && (
             <p className="text-[0.8em] opacity-35 py-3 text-center">输入待办事项...</p>
           )}

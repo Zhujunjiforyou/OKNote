@@ -1,6 +1,6 @@
 import { useEffect, useId } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle } from '@/components/ui/icons'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 

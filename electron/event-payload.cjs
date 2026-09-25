@@ -1,5 +1,6 @@
 const { isDateKey, isSafeIdentifier, isTimeKey, safeHexColor } = require('./data-rules.cjs');
 const { normalizeRecurrence, normalizeEventReminder } = require('./event-rules.cjs');
+const { normalizeCompletion } = require('./event-completion.cjs');
 
 function sanitizeTagPayload(tag) {
   if (!tag || typeof tag !== 'object' || !isSafeIdentifier(tag.id)) return null;
@@ -31,6 +32,7 @@ function sanitizeEventPayload(eventData, existing = null) {
     startDate: eventData.startDate,
     isAllDay: eventData.isAllDay === true,
     color: safeHexColor(eventData.color),
+    completion: normalizeCompletion(existing?.completion ?? eventData.completion) || { completed: false, occurrenceDates: [] },
     createdAt: existing && typeof existing.createdAt === 'string'
       ? existing.createdAt
       : (typeof eventData.createdAt === 'string' ? eventData.createdAt : new Date().toISOString()),

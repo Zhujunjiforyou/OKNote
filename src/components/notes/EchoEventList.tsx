@@ -3,8 +3,9 @@ import type { CalendarEvent } from '@/types/calendar.types'
 import type { Note } from '@/types/notes.types'
 import { useTagStore } from '@/stores/tag.store'
 import { useCalendarStore } from '@/stores/calendar.store'
-import { Clock, Repeat } from 'lucide-react'
-import { getEventInstanceKey, getTagViewEventInstances, hexToLuminance, normalizeCalendarEvents, normalizeHexColor } from '@/lib/utils'
+import { Clock, Repeat } from '@/components/ui/icons'
+import { getEventInstanceKey, getTagViewEventInstances, hexToLuminance, normalizeCalendarEvents, normalizeHexColor, isEventCompleted } from '@/lib/utils'
+import { EventCompletionButton } from '@/components/calendar/EventCompletionButton'
 import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
 
@@ -133,6 +134,8 @@ export function EchoEventList({ note, onSelectEvent, compact = false, surfaceCol
       {sorted.map((event) => {
         const isRecurring = !!event.recurrence
         return (
+        <div key={getEventInstanceKey(event)} className="flex min-w-0 items-center gap-1">
+        <EventCompletionButton event={event} completed={isEventCompleted(event)} />
         <button
           key={getEventInstanceKey(event)}
           onClick={() => onSelectEvent?.(event)}
@@ -162,7 +165,7 @@ export function EchoEventList({ note, onSelectEvent, compact = false, surfaceCol
 
           {/* Content */}
           <div className="flex-1 min-w-0">
-            <div className={`${compact ? 'text-[0.82em]' : 'text-[0.98em]'} font-bold truncate`} style={{ color: noteTextColor }}>{event.title}</div>
+            <div className={`${compact ? 'text-[0.82em]' : 'text-[0.98em]'} font-bold truncate ${isEventCompleted(event) ? 'task-completed' : ''}`} style={{ color: noteTextColor }}>{event.title}</div>
             <div className={`${compact ? 'text-[0.68em]' : 'text-[0.78em]'} flex min-w-0 items-center gap-1 mt-0.5 whitespace-nowrap overflow-hidden`} style={{ color: mutedColor }}>
               <Clock size={compact ? 8 : 9} className="shrink-0" />
               {isRecurring && (
@@ -181,6 +184,7 @@ export function EchoEventList({ note, onSelectEvent, compact = false, surfaceCol
           {/* Color dot */}
           <div className="w-1.5 h-1.5 rounded-full shrink-0 opacity-40 group-hover:opacity-75 transition-opacity" style={{ backgroundColor: event.color }} />
         </button>
+        </div>
         )
       })}
     </div>

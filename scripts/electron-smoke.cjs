@@ -4,9 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const executable = process.env.OKNOTE_ELECTRON_EXECUTABLE || (process.platform === 'win32'
-  ? path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
-  : path.join(root, 'node_modules', '.bin', 'electron'));
+const executable = process.env.OKNOTE_ELECTRON_EXECUTABLE || require('electron');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oknote-electron-smoke-'));
 const readyMarker = path.join(dataDir, '.smoke-ready');
 

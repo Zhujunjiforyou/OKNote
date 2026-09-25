@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import { PersistenceNotice } from '@/components/PersistenceNotice'
 import { UndoNotice } from '@/components/UndoNotice'
 import { MotionConfig } from 'framer-motion'
@@ -64,15 +63,13 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <TooltipProvider delayDuration={300}>
-        <Suspense fallback={<WindowFallback />}>
-          {renderWindow()}
-        </Suspense>
-        <PersistenceNotice />
-        <UndoNotice />
-        <PreviewModeNotice />
-        <ReducedMotionSync />
-      </TooltipProvider>
+      <Suspense fallback={<WindowFallback />}>
+        {renderWindow()}
+      </Suspense>
+      <PersistenceNotice />
+      <UndoNotice />
+      <PreviewModeNotice />
+      <ReducedMotionSync />
     </MotionConfig>
   )
 }

@@ -24,8 +24,8 @@ export function GlobalFontPanel({
     : `${requestedGlobalFontSize} 档 · 显示 ${displayGlobalFontSize}px`
 
   return (
-    <div className="space-y-4">
-      <div>
+    <div className="settings-font-fields">
+      <div className="min-w-0">
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <label className="text-[11px] font-semibold uppercase tracking-widest" style={{ opacity: labelO }}>全局字体</label>
           <span className="text-[10px] tabular-nums" style={{ opacity: subtleO }}>{systemFonts.length > 0 ? `系统字体 ${systemFonts.length} 种` : '字体加载中…'}</span>
@@ -35,7 +35,7 @@ export function GlobalFontPanel({
         <p className="text-[10px] mt-1" style={{ opacity: subtleO }}>此字体将同时应用于日历和所有便签</p>
       </div>
 
-      <div>
+      <div className="min-w-0">
         <label className="text-[11px] font-semibold uppercase tracking-widest opacity-45 mb-1.5 block">全局字号 <span className="opacity-60 font-normal">{globalFontLabel}</span></label>
         <div className="flex items-center gap-2">
           <span className="w-4 text-[10px] tabular-nums opacity-45">{FONT_SIZE_MIN}</span>

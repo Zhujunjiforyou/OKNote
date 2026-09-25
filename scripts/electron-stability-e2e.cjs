@@ -5,9 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const root = path.join(__dirname, '..');
-const executable = process.env.OKNOTE_ELECTRON_EXECUTABLE || (process.platform === 'win32'
-  ? path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
-  : path.join(root, 'node_modules', '.bin', 'electron'));
+const executable = process.env.OKNOTE_ELECTRON_EXECUTABLE || require('electron');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oknote-electron-e2e-'));
 const appDataDir = path.join(dataDir, 'data');
 const { delay, allocatePort, waitForPage, DevToolsClient, stopChild } = require('./lib/electron-test-driver.cjs');

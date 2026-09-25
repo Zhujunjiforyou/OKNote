@@ -3,12 +3,14 @@ import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { X, Pencil, Trash2, Clock, MapPin, Tag, Repeat, Bell } from 'lucide-react'
+import { X, Pencil, Trash2, Clock, MapPin, Tag, Repeat, Bell } from '@/components/ui/icons'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { CalendarEvent } from '@/types/calendar.types'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { getEventInstanceRange } from '@/lib/utils'
+import { getEventInstanceRange, isEventCompleted, legacyCompletedEventKeys } from '@/lib/utils'
+import { useNotesStore } from '@/stores/notes.store'
+import { EventCompletionButton } from './EventCompletionButton'
 
 function recurrenceLabel(event: CalendarEvent): string {
   const recurrence = event.recurrence
@@ -36,12 +38,14 @@ export function EventDetailModal() {
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
   const tags = useTagStore((s) => s.tags)
+  const notes = useNotesStore((s) => s.notes)
 
   const event = events.find((e) => e.id === selectedEventId)
   const dialogRef = useDialogFocusTrap(!!event)
   const eventTag = event?.tagId ? tags.find((tag) => tag.id === event.tagId) : null
   const instanceRange = event ? getEventInstanceRange(event, selectedEventOccurrenceDate) : null
   const isRecurring = !!event?.recurrence
+  const completed = event ? isEventCompleted(event, legacyCompletedEventKeys(notes), instanceRange?.startDate) : false
 
   useEffect(() => {
     if (!event) return
@@ -68,7 +72,7 @@ export function EventDetailModal() {
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
             onClick={(e) => e.stopPropagation()}
-            className="w-[380px] max-h-[80vh] overflow-auto"
+            className="w-[380px] max-w-[calc(100vw-24px)] max-h-[80vh] overflow-auto"
             role="dialog"
             aria-modal="true"
             aria-labelledby="event-detail-title"
@@ -79,7 +83,7 @@ export function EventDetailModal() {
 
               <CardContent className="pt-5">
                 <div className="flex items-start justify-between mb-4">
-                  <h2 id="event-detail-title" className="text-base font-semibold pr-4">{event.title}</h2>
+                  <h2 id="event-detail-title" className={`min-w-0 break-words text-base font-semibold pr-4 ${completed ? 'task-completed' : ''}`}>{event.title}</h2>
                   <button
                     onClick={() => selectEvent(null)}
                     className="shrink-0 w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent transition-colors"
@@ -90,6 +94,10 @@ export function EventDetailModal() {
                 </div>
 
                 <div className="space-y-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <EventCompletionButton event={event} completed={completed} occurrenceDate={instanceRange?.startDate} />
+                    <span>{completed ? '已完成' : isRecurring ? '完成这一次事件' : '标记为已完成'}</span>
+                  </div>
                   {/* Tag */}
                   {eventTag && (
                     <div className="flex items-center gap-2" style={{ color: eventTag.color }}>
@@ -116,7 +124,7 @@ export function EventDetailModal() {
                       <div className="min-w-0">
                         <div>{recurrenceLabel(event)}循环{event.recurrence.until ? `，至 ${event.recurrence.until}` : ''}</div>
                         <p className="mt-0.5 text-[11px] leading-relaxed">
-                          当前实例为 {instanceRange?.startDate}；编辑和删除会作用于整个循环系列。
+                          当前实例为 {instanceRange?.startDate}；完成状态仅作用于这一次，编辑和删除会作用于整个循环系列。
                         </p>
                       </div>
                     </div>
@@ -125,7 +133,7 @@ export function EventDetailModal() {
                   {event.reminder?.enabled && (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Bell size={14} />
-                      <span>{reminderLabel(event.reminder.minutesBefore)}{event.isAllDay ? '，当天 09:00' : ''}{event.reminder.playSound ? '，带提示音' : ''}</span>
+                      <span>{completed ? '已完成，本次不再提醒' : `${reminderLabel(event.reminder.minutesBefore)}${event.isAllDay ? '，当天 09:00' : ''}${event.reminder.playSound ? '，带提示音' : ''}`}</span>
                     </div>
                   )}
 

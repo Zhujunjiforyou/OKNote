@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, Repeat2, RotateCcw } from 'lucide-react'
+import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat2, RotateCcw } from '@/components/ui/icons'
 import type { Note } from '@/types/notes.types'
-import { TodoItem } from '@/components/notes/TodoItem'
 import { useNotesStore } from '@/stores/notes.store'
 import { useCalendarStore } from '@/stores/calendar.store'
-import type { CalendarEvent } from '@/types/calendar.types'
+import { TodoItem } from '@/components/notes/TodoItem'
+import { EventCompletionButton } from '@/components/calendar/EventCompletionButton'
 import {
   addDaysToDateKey,
   filterEventsByDate,
@@ -14,7 +14,9 @@ import {
   MAX_SUPPORTED_DATE_KEY,
   MIN_SUPPORTED_DATE_KEY,
   normalizeCalendarEvents,
-  normalizeHexColor,
+  normalizeNote,
+  isEventCompleted,
+  legacyCompletedEventKeys,
 } from '@/lib/utils'
 import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
@@ -55,6 +57,8 @@ function sortItems<T extends { sortOrder: number; createdAt?: string }>(items: T
 export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, textColor, mutedColor, lightBg, onDraftChange }: DailyTodoPanelProps) {
   const updateNote = useNotesStore((s) => s.updateNote)
   const addItem = useNotesStore((s) => s.addItem)
+  const storedNotes = useNotesStore((s) => s.notes)
+  const allNotes = useMemo(() => [...storedNotes.filter((item) => item.id !== note.id), note], [storedNotes, note])
   const events = useCalendarStore((s) => s.events)
   const loadEvents = useCalendarStore((s) => s.loadEvents)
   const today = useCurrentDateKey()
@@ -68,6 +72,15 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
   const hasContentDrafts = newTodo.trim().length > 0 || Object.keys(itemDrafts).length > 0
   const dateDraftDirty = editingDate && dateDraft !== activeDate
   const hasLocalDrafts = hasContentDrafts || dateDraftDirty
+
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return
+    let cancelled = false
+    window.electronAPI.getNotesState().then((notes) => {
+      if (!cancelled) for (const raw of notes) useNotesStore.getState().receiveNote(normalizeNote(raw))
+    }).catch((error) => reportPersistenceIssue('待办读取失败', error instanceof Error ? error.message : '无法读取其他便签。'))
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     onDraftChange?.('daily-composer', 'new-todo', newTodo.trim().length > 0)
@@ -140,17 +153,17 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
   }, [loadEvents])
 
   const dailyItems = useMemo(() => {
-    return sortItems((note.items || []).filter((item) => item.todoDate === activeDate))
-  }, [activeDate, note.items])
+    return allNotes.flatMap((source) => sortItems((source.items || []).filter((item) => item.todoDate === activeDate))
+      .map((item) => ({ ...item, noteId: source.id, noteTitle: source.title, noteColor: source.color, noteType: source.noteType })))
+  }, [activeDate, allNotes])
 
   const completedEventOccurrences = useMemo(
-    () => new Set(note.dailyTodo?.completedEventOccurrences || []),
-    [note.dailyTodo?.completedEventOccurrences],
+    () => legacyCompletedEventKeys(allNotes),
+    [allNotes],
   )
 
-  const recurringEvents = useMemo(() => {
+  const dayEvents = useMemo(() => {
     return filterEventsByDate(events, activeDate)
-      .filter((event) => event.recurrence)
       .sort((a, b) => {
         if (a.isAllDay !== b.isAllDay) return a.isAllDay ? -1 : 1
         return (a.startTime || '').localeCompare(b.startTime || '') || a.title.localeCompare(b.title, 'zh-CN')
@@ -158,10 +171,10 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
   }, [activeDate, events])
 
   const previousUnfinished = useMemo(() => {
-    return (note.items || [])
+    return allNotes.flatMap((source) => source.items || [])
       .filter((item) => item.todoDate && item.todoDate < today && !item.isCompleted)
       .sort((a, b) => (b.todoDate || '').localeCompare(a.todoDate || '') || a.sortOrder - b.sortOrder)
-  }, [note.items, today])
+  }, [allNotes, today])
 
   const switchDate = useCallback(async (dateStr: string, options: { applyingDateDraft?: boolean } = {}) => {
     if (!isDateKey(dateStr)) return false
@@ -207,27 +220,10 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
     setNewTodo('')
   }
 
-  const toggleRecurringEvent = (event: CalendarEvent) => {
-    const occurrenceKey = getEventInstanceKey(event)
-    const next = new Set(note.dailyTodo?.completedEventOccurrences || [])
-    if (next.has(occurrenceKey)) next.delete(occurrenceKey)
-    else next.add(occurrenceKey)
-    updateNote({
-      ...note,
-      dailyTodo: {
-        ...note.dailyTodo,
-        activeDate,
-        lastResetDate: note.dailyTodo?.lastResetDate || today,
-        completedEventOccurrences: [...next].slice(-20000),
-      },
-      updatedAt: new Date().toISOString(),
-    })
-  }
-
   const latestUnfinishedDate = previousUnfinished[0]?.todoDate
-  const recurringCompletedCount = recurringEvents.filter((event) => completedEventOccurrences.has(getEventInstanceKey(event))).length
-  const completedCount = dailyItems.filter((item) => item.isCompleted).length + recurringCompletedCount
-  const totalCount = dailyItems.length + recurringEvents.length
+  const eventCompletedCount = dayEvents.filter((event) => isEventCompleted(event, completedEventOccurrences)).length
+  const completedCount = dailyItems.filter((item) => item.isCompleted).length + eventCompletedCount
+  const totalCount = dailyItems.length + dayEvents.length
   const displayDate = formatDisplayDate(activeDate)
   const canGoPrevious = activeDate > MIN_SUPPORTED_DATE_KEY
   const canGoNext = activeDate < MAX_SUPPORTED_DATE_KEY
@@ -354,40 +350,28 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
           data-note-wheel-scroll
           onWheel={(event) => event.stopPropagation()}
         >
-          {recurringEvents.map((event) => {
+          {dayEvents.map((event) => {
             const occurrenceKey = getEventInstanceKey(event)
-            const isCompleted = completedEventOccurrences.has(occurrenceKey)
-            const eventColor = normalizeHexColor(event.color)
+            const isCompleted = isEventCompleted(event, completedEventOccurrences)
             return (
               <div
                 key={occurrenceKey}
-                className={`daily-recurring-item note-todo-item flex min-w-0 items-center gap-1.5 rounded-md border ${compact ? 'px-1 py-0.5' : 'px-1.5 py-1'}`}
+                className={`daily-recurring-item note-todo-item flex min-w-0 items-center gap-1 rounded-md border ${compact ? 'px-1 py-0.5' : 'px-1.5 py-1'}`}
                 style={{ backgroundColor: panelBg, borderColor: panelBorder }}
               >
-                <button
-                  type="button"
-                  onClick={() => toggleRecurringEvent(event)}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 transition-opacity hover:opacity-80"
-                  style={{
-                    borderColor: eventColor,
-                    backgroundColor: isCompleted ? eventColor : 'transparent',
-                  }}
-                  aria-label={isCompleted ? `恢复循环待办：${event.title}` : `完成循环待办：${event.title}`}
-                >
-                  {isCompleted && <Check size={10} color="#fff" />}
-                </button>
+                <EventCompletionButton event={event} completed={isCompleted} />
                 <button
                   type="button"
                   onClick={() => window.electronAPI?.openEventEditor(event)}
                   className="min-w-0 flex-1 text-left"
-                  title="打开循环事件"
+                  title={event.recurrence ? '打开循环事件' : '打开事件'}
                 >
                   <span className={`block truncate text-[0.9em] leading-tight ${isCompleted ? 'line-through opacity-45' : ''}`}>
                     {event.title}
                   </span>
                   <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[0.62em] leading-tight" style={{ color: mutedColor }}>
-                    <Repeat2 size={9} className="shrink-0" />
-                    <span className="shrink-0">循环事件</span>
+                    {event.recurrence ? <Repeat2 size={9} className="shrink-0" /> : <CalendarDays size={9} className="shrink-0" />}
+                    <span className="shrink-0">{event.recurrence ? '循环事件' : '事件'}</span>
                     <span className="truncate">· {event.isAllDay ? '全天' : (event.startTime || '未设时间')}</span>
                   </span>
                 </button>
@@ -395,7 +379,7 @@ export function DailyTodoPanel({ note, compact = false, panelBg, panelBorder, te
             )
           })}
           {dailyItems.map((item) => (
-            <TodoItem key={item.id} item={item} note={note} onDraftChange={handleItemDraftChange} />
+            <TodoItem key={`${item.noteId}-${item.id}`} item={item} noteId={item.noteId} noteColor={item.noteColor} allowUnscheduled={item.noteType !== 'daily'} onDraftChange={handleItemDraftChange} />
           ))}
           {totalCount === 0 && (
             <div className={`${compact ? 'py-5 text-[0.68em]' : 'py-8 text-[0.78em]'} daily-empty text-center`} style={{ color: mutedColor }}>

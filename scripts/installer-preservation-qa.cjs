@@ -11,6 +11,7 @@ const compiler = process.env.OKNOTE_MAKENSIS;
 if (!compiler) throw new Error('Set OKNOTE_MAKENSIS to a local makensis.exe');
 
 for (const existingTarget of [false, true]) {
+for (const runningAppStack of [false, true]) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oknote-installer-compat-'));
   assert.equal(path.dirname(root), os.tmpdir());
   assert.ok(path.basename(root).startsWith('oknote-installer-compat-'));
@@ -29,12 +30,12 @@ for (const existingTarget of [false, true]) {
         fs.writeFileSync(target, `current:${name}:中文`);
       }
     }
-    const build = spawnSync(compiler, ['/V2', `/DTEST_ROOT=${root}`, `/DTEST_ID=${randomUUID()}`,
+    const build = spawnSync(compiler, ['/V2', ...(runningAppStack ? ['/DTEST_RUNNING_APP_STACK'] : []), `/DTEST_ROOT=${root}`, `/DTEST_ID=${randomUUID()}`,
       `/DSOURCE_ROOT=${sourceRoot}`, path.join(__dirname, 'fixtures', 'installer-preservation-test.nsi')],
     { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
     assert.equal(build.status, 0, `Compile failed: ${build.stdout}\n${build.stderr}`);
     const run = spawnSync(path.join(root, 'preserve-test.exe'), [], { windowsHide: true, timeout: 30_000 });
-    assert.equal(run.status, 0, `NSIS upgrade failed: ${run.error?.message || run.status}`);
+    assert.equal(run.status, 0, `NSIS upgrade failed (running-app stack=${runningAppStack}): ${run.error?.message || run.status}`);
     assert.equal(fs.existsSync(path.join(root, 'old-install')), false);
     const backups = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()
       && entry.name !== 'new-install').map(entry => path.join(root, entry.name, 'user-data'));
@@ -43,10 +44,11 @@ for (const existingTarget of [false, true]) {
       assert.ok(backups.some(dir => fs.existsSync(path.join(dir, name))
         && fs.readFileSync(path.join(dir, name), 'utf8') === `old:${name}:中文`), 'original backup must survive the uninstaller');
     }
-    console.log(`PASS installer compatibility: old directory removed, ${existingTarget ? 'existing destination unchanged' : 'changed install path restored'}, originals retained`);
+    console.log(`PASS installer compatibility: old directory removed, ${existingTarget ? 'existing destination unchanged' : 'changed install path restored'}, originals retained, running-app stack=${runningAppStack}`);
     fs.rmSync(root, { recursive: true, force: true });
   } catch (error) {
     console.error(`Isolated installer diagnostics retained: ${root}`);
     throw error;
   }
+}
 }

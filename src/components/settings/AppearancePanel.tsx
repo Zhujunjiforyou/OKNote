@@ -27,7 +27,7 @@ export function AppearancePanel({
     : `${requestedFontSize} 档 · 显示 ${previewFontSize}px`
 
   return (
-    <div className="space-y-4">
+    <div className="settings-appearance-fields">
       {/* Font */}
       <div>
         <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -114,7 +114,7 @@ export function AppearancePanel({
         </div>
       )}
 
-      {showColorControls && <div>
+      {showColorControls && <div className="settings-preview-field">
         <label className="text-[11px] font-semibold uppercase tracking-widest mb-1.5 block" style={{ opacity: labelO }}>预览</label>
         <div
           className="settings-preview rounded-xl border p-3 flex flex-col gap-1.5 overflow-hidden"
@@ -128,7 +128,7 @@ export function AppearancePanel({
         >
           <div className="font-medium opacity-80" style={{ fontSize: previewFontSize + 'px' }}>预览标题</div>
           <div className="opacity-45" style={{ fontSize: (previewFontSize * 0.9) + 'px' }}>展示当前字体、颜色和适配后字号的真实效果</div>
-          <div className="flex gap-1.5 mt-0.5">
+          <div className="flex flex-wrap gap-1.5 mt-0.5">
             <span className="px-1.5 py-0.5 rounded text-sky-400/80" style={{ fontSize: (previewFontSize * 0.8) + 'px', backgroundColor: '#38bdf815' }}>标签A</span>
             <span className="px-1.5 py-0.5 rounded text-teal-400/80" style={{ fontSize: (previewFontSize * 0.8) + 'px', backgroundColor: '#2dd4bf15' }}>标签B</span>
           </div>

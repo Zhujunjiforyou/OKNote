@@ -25,6 +25,7 @@ interface CalendarStore {
   setMultiDayMode: (mode: boolean) => void
   addEvent: (event: CalendarEvent) => Promise<EventMutationResult>
   updateEvent: (event: CalendarEvent) => Promise<EventMutationResult>
+  setEventCompleted: (id: string, occurrenceDate: string, completed: boolean) => Promise<void>
   deleteEvent: (id: string) => void
   getEventsByDate: (dateStr: string) => CalendarEvent[]
   loadEvents: (events: CalendarEvent[], revision?: number) => void
@@ -202,6 +203,24 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       expectedRevision: get().eventsRevision,
       expectedUpdatedAt: previous?.updatedAt,
     }, retry)
+  },
+
+  setEventCompleted: async (id, occurrenceDate, completed) => {
+    const event = get().events.find((item) => item.id === id)
+    if (!window.electronAPI?.isElectron) {
+      if (!event) return
+      const completion = event.completion || { completed: false, occurrenceDates: [] }
+      const dates = new Set(completion.occurrenceDates)
+      if (completed) dates.add(occurrenceDate)
+      else dates.delete(occurrenceDate)
+      set({ events: get().events.map((item) => item.id === id ? { ...item, completion: {
+        completed: event.recurrence ? completion.completed : completed,
+        occurrenceDates: event.recurrence ? [...dates] : completion.occurrenceDates,
+      } } : item) })
+      return
+    }
+    await persistEventMutation(id, Symbol(id), { type: 'complete', id, occurrenceDate, completed },
+      () => { void get().setEventCompleted(id, occurrenceDate, completed) })
   },
 
   loadEvents: (events, revision = get().eventsRevision) => applyServerEvents(events, revision),

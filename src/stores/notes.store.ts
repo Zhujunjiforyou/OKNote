@@ -16,14 +16,17 @@ interface NotesStore {
   deleteItem: (noteId: string, itemId: string) => NoteItem | null
   restoreItem: (noteId: string, item: NoteItem, index: number) => void
   updateItemContent: (noteId: string, itemId: string, content: string) => void
+  updateItemDate: (noteId: string, itemId: string, todoDate?: string) => void
 
   loadNotes: (notes: Note[]) => void
+  receiveNote: (note: Note) => void
 }
 
 interface NoteSaveQueueState {
   running: boolean
   pending: Note | null
   revision: number
+  failed?: boolean
 }
 
 const noteSaveQueues = new Map<string, NoteSaveQueueState>()
@@ -64,11 +67,13 @@ async function drainNoteSaveQueue(noteId: string, state: NoteSaveQueueState) {
         }
       }
       if (!result.ok) {
+        state.failed = true
         state.pending = null
         reportNoteSaveFailure(queued, result)
         break
       }
       const persistedRevision = noteRevision(result.note)
+      state.failed = false
       state.revision = persistedRevision > state.revision ? persistedRevision : state.revision + 1
       useNotesStore.setState((current) => ({
         notes: current.notes.map((note) => note.id === noteId ? { ...note, revision: state.revision } : note),
@@ -216,5 +221,25 @@ export const useNotesStore = create<NotesStore>((set) => ({
     })
   },
 
+  updateItemDate: (noteId, itemId, todoDate) => {
+    set((s) => {
+      const notes = s.notes.map((note) => note.id === noteId ? {
+        ...note, updatedAt: now(), items: note.items.map((item) => item.id === itemId ? { ...item, todoDate } : item),
+      } : note)
+      const note = notes.find((entry) => entry.id === noteId)
+      if (note) saveNoteFile(note)
+      return { notes }
+    })
+  },
+
+  receiveNote: (note) => {
+    const queue = noteSaveQueues.get(note.id)
+    if (queue?.running || queue?.pending || queue?.failed) return
+    set((s) => {
+      const current = s.notes.find((item) => item.id === note.id)
+      if (current && noteRevision(current) > noteRevision(note)) return s
+      return { notes: current ? s.notes.map((item) => item.id === note.id ? note : item) : [...s.notes, note] }
+    })
+  },
   loadNotes: (notes) => set({ notes }),
 }))

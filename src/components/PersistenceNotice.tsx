@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, RefreshCw, X } from '@/components/ui/icons'
 import { reportPersistenceIssue, usePersistenceStore } from '@/stores/persistence.store'
 
 export function PersistenceNotice() {

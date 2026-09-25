@@ -1,7 +1,7 @@
 {
   "name": "oknote",
-  "version": "2.2.1",
-  "description": "Windows desktop calendar, sticky-note and reminder application.",
+  "version": "2.3.0",
+  "description": "Desktop calendar, sticky-note and reminder application for Windows and macOS.",
   "author": "zhujunjiforyou",
   "homepage": "https://github.com/Zhujunjiforyou/OKNote",
   "repository": {
@@ -20,21 +20,33 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit -p tsconfig.app.json",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:reminder-performance",
+    "test:reminder-performance": "node scripts/reminder-performance-qa.cjs",
     "test:electron-smoke": "node scripts/electron-smoke.cjs",
     "test:electron-e2e": "node scripts/electron-stability-e2e.cjs",
     "test:electron-qa": "node scripts/electron-feature-qa.cjs",
+    "test:mac-windows": "node scripts/electron-macos-window-qa.cjs",
+    "test:electron-performance": "node scripts/electron-performance-qa.cjs",
+    "test:electron-compact": "node scripts/electron-compact-layout-qa.cjs",
+    "test:electron-tasks": "node scripts/electron-task-completion-qa.cjs",
+    "test:electron-dock": "node scripts/electron-dock-restoration-qa.cjs",
     "test:electron-upgrade": "node scripts/electron-legacy-upgrade-qa.cjs",
     "test:installer-upgrade": "node scripts/installer-preservation-qa.cjs",
     "prepare:icon": "node scripts/create-app-icon.cjs",
+    "prepare:mac-native": "node scripts/build-macos-native.cjs",
     "preelectron:build": "node scripts/create-app-icon.cjs",
+    "preelectron:dev": "node scripts/create-app-icon.cjs && node scripts/build-macos-native.cjs",
+    "preelectron:preview": "node scripts/create-app-icon.cjs && node scripts/build-macos-native.cjs",
     "electron:dev": "cross-env NODE_ENV=development VITE_PORT=5199 concurrently --kill-others --kill-others-on-fail \"vite --port 5199 --strictPort\" \"wait-on http://localhost:5199 && electron . --dev\"",
     "electron:preview": "npm run build && electron .",
-    "electron:build": "tsc -b && vite build && electron-builder"
+    "electron:build": "npm run build && electron-builder --win --publish never",
+    "electron:build:mac": "npm run prepare:icon && npm run build && electron-builder --mac --publish never",
+    "electron:build:mac:preview": "npm run prepare:icon && npm run build && node scripts/build-mac-preview.cjs",
+    "electron:build:win:preview": "npm run prepare:icon && npm run build && electron-builder --config build/electron-builder.preview.cjs --win --publish never"
   },
   "devDependencies": {
-    "@radix-ui/react-slot": "^1.1.1",
-    "@radix-ui/react-tooltip": "^1.1.6",
+    "@electron/packager": "20.3.0",
+    "@resvg/resvg-js": "2.6.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
@@ -44,10 +56,10 @@
     "concurrently": "^9.2.4",
     "cross-env": "^7.0.3",
     "date-fns": "^4.1.0",
-    "electron": "^41.10.6",
+    "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
     "framer-motion": "^11.15.0",
-    "lucide-react": "^0.468.0",
+    "node-api-headers": "1.9.0",
     "postcss": "^8.5.26",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -58,11 +70,14 @@
     "vite": "^6.4.3",
     "vitest": "^4.1.11",
     "wait-on": "^8.0.5",
+    "yauzl": "3.2.1",
+    "yazl": "3.3.1",
     "zustand": "^5.0.2"
   },
   "build": {
     "appId": "com.oknote.app",
     "productName": "OKNote",
+    "artifactName": "OKNote-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release/${version}"
     },
@@ -71,6 +86,37 @@
       "electron/**/*"
     ],
     "afterPack": "./scripts/afterPack.cjs",
+    "extraResources": [
+      {
+        "from": "build/icons",
+        "to": "icons",
+        "filter": [
+          "*.png",
+          "*.ico"
+        ]
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icons/app.icns",
+      "category": "public.app-category.productivity",
+      "minimumSystemVersion": "13.0"
+    },
     "win": {
       "target": [
         {
@@ -80,7 +126,7 @@
           ]
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icons/app.ico"
     },
     "nsis": {
       "include": "build/preserve-user-data.nsh",

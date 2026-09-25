@@ -1,13 +1,14 @@
 import { createRequire } from 'node:module'
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { dirname, join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const { default: afterPack } = require('../scripts/afterPack.cjs') as {
-  default: (context: { appOutDir: string }) => Promise<void>
+  default: (context: { appOutDir: string; electronPlatformName?: string; arch?: string; packager?: { appInfo: { productFilename: string } } }) => Promise<void>
 }
+const nativeBuilder = require('../scripts/build-macos-native.cjs') as { buildMacNative: (arch: string) => string }
 const directories: string[] = []
 
 function runtime(locales: Record<string, string> | null) {
@@ -27,7 +28,49 @@ function runtime(locales: Record<string, string> | null) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+describe('macOS package runtime validation', () => {
+  function macRuntime(arch = 'arm64') {
+    const appOutDir = mkdtempSync(join(tmpdir(), 'oknote-mac-pack-'))
+    directories.push(appOutDir)
+    const contents = join(appOutDir, 'OKNote.app', 'Contents')
+    for (const name of ['Info.plist', 'MacOS/OKNote', 'Resources/app.asar',
+      'Frameworks/Electron Framework.framework/Versions/A/Electron Framework',
+      'Frameworks/Electron Framework.framework/Versions/A/Resources/icudtl.dat',
+      'Frameworks/Electron Framework.framework/Versions/A/Resources/resources.pak',
+      'Frameworks/Electron Framework.framework/Versions/A/Resources/fr.lproj/locale.pak']) {
+      const file = join(contents, name)
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, `fixture:${name}`)
+    }
+    return { appOutDir, electronPlatformName: 'darwin', arch, packager: { appInfo: { productFilename: 'OKNote' } } }
+  }
+
+  it.each(['arm64', 'x64'])('keeps the Mac framework and includes the %s native window module', async (arch) => {
+    const context = macRuntime(arch)
+    const fixture = join(context.appOutDir, 'fixture.node')
+    writeFileSync(fixture, `native:${arch}`)
+    const build = vi.spyOn(nativeBuilder, 'buildMacNative').mockReturnValue(fixture)
+    await afterPack(context)
+    const resource = join(context.appOutDir, 'OKNote.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/fr.lproj/locale.pak')
+    expect(readFileSync(resource, 'utf8')).toContain('fixture:')
+    expect(build).toHaveBeenCalledWith(arch)
+    expect(readFileSync(join(context.appOutDir, 'OKNote.app/Contents/Resources/native/desktop-window.node'), 'utf8')).toBe(`native:${arch}`)
+  })
+
+  it('blocks packaging when the native window module cannot be built', async () => {
+    vi.spyOn(nativeBuilder, 'buildMacNative').mockImplementation(() => { throw new Error('native build failed') })
+    await expect(afterPack(macRuntime())).rejects.toThrow('native build failed')
+  })
+
+  it('rejects a missing Mac runtime before creating an archive', async () => {
+    const context = macRuntime()
+    rmSync(join(context.appOutDir, 'OKNote.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/icudtl.dat'))
+    await expect(afterPack(context)).rejects.toThrow('macOS Electron runtime is incomplete')
+  })
 })
 
 describe('Windows package runtime validation', () => {

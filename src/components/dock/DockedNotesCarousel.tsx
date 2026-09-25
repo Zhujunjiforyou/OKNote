@@ -1,7 +1,8 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { memo, useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useNotesStore } from '@/stores/notes.store'
 import { DockedNoteCard, type DockedNoteDraftKind } from './DockedNoteCard'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight } from '@/components/ui/icons'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import { clampFontSize, getTypographyLayoutTier } from '@/lib/typography'
@@ -10,19 +11,15 @@ interface DockedNotesCarouselProps {
   onDraftChange?: (key: string, kind: DockedNoteDraftKind, dirty: boolean) => void
 }
 
-export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps) {
+export const DockedNotesCarousel = memo(function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const notes = useNotesStore((s) => s.notes)
   const { settings: noteSettings } = useAppSettings('notes')
   const reduceMotion = useReducedMotion()
-  const dockedNotes = useMemo(
-    () => notes
+  const dockedNotes = useNotesStore(useShallow((s) => s.notes
       .filter((n) => n.isDocked && !n.isHidden && n.noteType !== 'view')
       .sort((a, b) => (a.dockedOrder ?? Number.MAX_SAFE_INTEGER) - (b.dockedOrder ?? Number.MAX_SAFE_INTEGER)
         || a.createdAt.localeCompare(b.createdAt)
-        || a.id.localeCompare(b.id)),
-    [notes]
-  )
+        || a.id.localeCompare(b.id))))
 
   const [activeIndex, setActiveIndex] = useState(0)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -85,11 +82,10 @@ export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps)
     const visibleIds = new Set(visibleNotes.map((note) => note.id))
     return [...visibleNotes, ...dockedNotes.filter((note) => dirtyNoteIds.has(note.id) && !visibleIds.has(note.id))]
   }, [dirtyNoteIds, dockedNotes, visibleNotes])
+  // With one off-screen note, both directions lead to the same candidate.
+  // Keep both previews so the circular navigation remains visible.
   const leftPeekNote = loopEnabled ? dockedNotes[mod(activeIndex - 1)] : null
   const rightPeekNote = loopEnabled ? dockedNotes[mod(activeIndex + visibleCapacity)] : null
-  const repeatedPeek = !!leftPeekNote && leftPeekNote.id === rightPeekNote?.id
-  const visibleLeftPeek = repeatedPeek && slideDirection >= 0 ? null : leftPeekNote
-  const visibleRightPeek = repeatedPeek && slideDirection < 0 ? null : rightPeekNote
   const boardWidth = visibleNotes.length * cardWidth + Math.max(0, visibleNotes.length - 1) * cardGap
 
   useEffect(() => {
@@ -170,13 +166,13 @@ export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps)
             className="dock-carousel-stage relative h-full"
             style={{ width: boardWidth }}
           >
-            {visibleLeftPeek && (
+            {leftPeekNote && (
               <div
                 className="dock-peek dock-peek-left absolute top-1/2 h-[calc(100%_-_28px)]"
                 style={{ width: cardWidth }}
                 role="button"
                 tabIndex={0}
-                aria-label={`上一张便签：${visibleLeftPeek.title}`}
+                aria-label={`上一张便签：${leftPeekNote.title}`}
                 onClick={() => step(-1)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -185,16 +181,16 @@ export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps)
                   }
                 }}
               >
-                <DockedNoteCard note={visibleLeftPeek} isActive={false} attention={attentionNoteId === visibleLeftPeek.id} noteSettings={noteSettings} previewOnly />
+                <DockedNoteCard note={leftPeekNote} isActive={false} attention={attentionNoteId === leftPeekNote.id} noteSettings={noteSettings} previewOnly />
               </div>
             )}
-            {visibleRightPeek && (
+            {rightPeekNote && (
               <div
                 className="dock-peek dock-peek-right absolute top-1/2 h-[calc(100%_-_28px)]"
                 style={{ width: cardWidth }}
                 role="button"
                 tabIndex={0}
-                aria-label={`下一张便签：${visibleRightPeek.title}`}
+                aria-label={`下一张便签：${rightPeekNote.title}`}
                 onClick={() => step(1)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -203,7 +199,7 @@ export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps)
                   }
                 }}
               >
-                <DockedNoteCard note={visibleRightPeek} isActive={false} attention={attentionNoteId === visibleRightPeek.id} noteSettings={noteSettings} previewOnly />
+                <DockedNoteCard note={rightPeekNote} isActive={false} attention={attentionNoteId === rightPeekNote.id} noteSettings={noteSettings} previewOnly />
               </div>
             )}
             <div
@@ -264,4 +260,4 @@ export function DockedNotesCarousel({ onDraftChange }: DockedNotesCarouselProps)
       )}
     </div>
   )
-}
+})

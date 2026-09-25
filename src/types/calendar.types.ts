@@ -15,6 +15,7 @@ export interface EventReminder {
 }
 
 export interface CalendarEvent {
+  completion?: { completed: boolean; occurrenceDates: string[] }
   id: string
   title: string
   description: string

@@ -2,10 +2,23 @@ node_modules
 dist
 dist-ssr
 release
+/local-transfer/
 /build/icon.png
+/build/icons/
+/build/native/
+.impeccable/
+/test-results/
+/docs/
+/NVIDIA Corporation/
+*.log
+.env
+.env.*
+!.env.example
+/user-data/
 *.local
 .DS_Store
 .qoder
 *.tsbuildinfo
 Agent.md
+AGENT.md
 nul

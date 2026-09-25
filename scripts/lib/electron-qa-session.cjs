@@ -17,8 +17,10 @@ async function startSession(root, executable, dataDir) {
   const clients = [];
   const errors = [];
   let diagnostics = '';
-  const child = spawn(executable, ['.', `--remote-debugging-port=${port}`, `--user-data-dir=${dataDir}`,
-    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'], {
+  const backgroundArgs = process.env.OKNOTE_QA_NATIVE_WINDOW_BEHAVIOR === '1' ? [] : [
+    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+  ];
+  const child = spawn(executable, ['.', `--remote-debugging-port=${port}`, `--user-data-dir=${dataDir}`, ...backgroundArgs], {
     cwd: root,
     env: { ...process.env, OKNOTE_DATA_DIR: dataDir, OKNOTE_E2E_TEST: '1', NODE_ENV: 'production' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -104,8 +106,9 @@ async function fill(client, selector, value) {
 
 async function key(client, keyName, code) {
   await client.call('Page.bringToFront');
+  await waitUntil(() => client.evaluate('return document.hasFocus();'), 'keyboard target focus', 5000);
   const codes = { Enter: 13, Escape: 27, Tab: 9, ' ': 32, ArrowDown: 40, ArrowUp: 38 };
-  const params = { key: keyName, code: code || keyName, windowsVirtualKeyCode: codes[keyName] || 0 };
+  const params = { key: keyName, code: code || (keyName === ' ' ? 'Space' : keyName), windowsVirtualKeyCode: codes[keyName] || 0 };
   await client.call('Input.dispatchKeyEvent', { type: 'keyDown', ...params });
   await client.call('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
   await delay(80);

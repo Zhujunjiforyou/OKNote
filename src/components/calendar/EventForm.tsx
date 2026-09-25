@@ -4,7 +4,7 @@ import { useTagStore } from '@/stores/tag.store'
 import { CalendarEvent } from '@/types/calendar.types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Bell, Repeat, Trash2, X } from 'lucide-react'
+import { Bell, Repeat, Trash2, X } from '@/components/ui/icons'
 import { motion } from 'framer-motion'
 import { EVENT_COLOR_PALETTE, generateId, isImeComposing } from '@/lib/utils'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
@@ -338,7 +338,7 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.15 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-[420px] max-h-[calc(100vh-12px)] max-w-[calc(100vw-12px)] overflow-auto"
+        className="event-editor w-[460px] max-h-[calc(100vh-12px)] max-w-[calc(100vw-12px)] overflow-auto"
         onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter' && (e.ctrlKey || e.metaKey) && title.trim()) { e.preventDefault(); void handleSave() } }}
         role="dialog"
         aria-modal={confirmAction === null ? 'true' : undefined}
@@ -349,7 +349,7 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
         <Card className="border shadow-lg">
           <div className="h-1 rounded-t-xl" style={{ backgroundColor: color }} />
           <fieldset disabled={isSaving} className="contents">
-          <CardContent className="pt-5">
+          <CardContent className="event-editor-content pt-5">
             <div className="flex items-center justify-between mb-4">
               <h2 id="event-form-title" className="text-base font-semibold">
                 {editingEvent ? (editingEvent.recurrence ? '编辑循环系列' : '编辑事件') : (isMultiDay ? '新建跨日事件' : '新建事件')}
@@ -406,8 +406,9 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
 
               {/* Date range */}
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
+                <div className="event-date-group">
                   <label htmlFor="event-start-date" className="text-xs text-muted-foreground w-10 shrink-0">开始</label>
+                  <div className="event-date-inputs">
                   <input
                     id="event-start-date"
                     type="date"
@@ -430,10 +431,12 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
                       />
                     </>
                   )}
+                  </div>
                 </div>
                 {(isMultiDay || !isAllDay) && (
-                  <div className="flex items-center gap-2">
+                  <div className="event-date-group">
                     <label htmlFor={isMultiDay ? 'event-end-date' : 'event-end-time'} className="text-xs text-muted-foreground w-10 shrink-0">结束</label>
+                    <div className="event-date-inputs">
                     {isMultiDay ? (
                       <input
                         id="event-end-date"
@@ -460,6 +463,7 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
                         />
                       </>
                     )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -668,7 +672,7 @@ export function EventForm({ onClose, initialMultiDay = false, onDirtyChange }: E
             </div>
 
             {/* Actions */}
-            <div className="sticky bottom-0 z-10 -mx-5 mt-4 flex gap-2 border-t border-border bg-card px-5 py-3">
+            <div className="event-editor-actions sticky bottom-0 z-10 -mx-5 mt-4 flex flex-wrap gap-2 border-t border-border bg-card px-5 py-3">
               {editingEvent && (
                 <Button
                   variant="destructive"

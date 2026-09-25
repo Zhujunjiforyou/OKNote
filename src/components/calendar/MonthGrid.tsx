@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import {
@@ -9,13 +10,15 @@ import {
   eachDayOfInterval,
   isSameMonth,
   format,
+  parseISO,
 } from 'date-fns'
 import { DayCell } from './DayCell'
 import { getAdjustedWorkday, getHoliday } from '@/lib/holidays'
 import type { CalendarEvent } from '@/types/calendar.types'
-import { buildDailyTodoItemsByDate, buildEventsByDate, compareCalendarEventStart, getEventInstanceKey } from '@/lib/utils'
+import { buildDailyTodoItemsByDate, buildEventsByDate, compareCalendarEventStart, getEventInstanceKey, isEventCompleted, legacyCompletedEventKeys, type CalendarTodoPreview } from '@/lib/utils'
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const EMPTY_TODOS: CalendarTodoPreview[] = []
 
 interface MonthGridProps {
   compact?: boolean
@@ -28,24 +31,25 @@ interface MonthGridProps {
   todayKey?: string
 }
 
-export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick, todayKey }: MonthGridProps) {
+export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick, todayKey }: MonthGridProps) {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const events = useCalendarStore((s) => s.events)
-  const openEventForm = useCalendarStore((s) => s.openEventForm)
-  const notes = useNotesStore((s) => s.notes)
+  const notes = useNotesStore(useShallow((s) => s.notes.filter((note) =>
+    note.items.some((item) => !!item.todoDate) || !!note.dailyTodo?.completedEventOccurrences?.length)))
+  const completionKey = JSON.stringify([...legacyCompletedEventKeys(notes)].sort())
+  const completedKeys = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(completionKey)), [completionKey])
+  const periodStart = format(viewMode === 'week' ? startOfWeek(currentDate, { weekStartsOn: 1 }) : startOfMonth(currentDate), 'yyyy-MM-dd')
 
   const days = useMemo(() => {
+    const periodDate = parseISO(periodStart)
     if (viewMode === 'week') {
-      const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
-      const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
-      return eachDayOfInterval({ start: weekStart, end: weekEnd })
+      return eachDayOfInterval({ start: periodDate, end: endOfWeek(periodDate, { weekStartsOn: 1 }) })
     }
-    const monthStart = startOfMonth(currentDate)
-    const monthEnd = endOfMonth(currentDate)
-    const calStart = startOfWeek(monthStart, { weekStartsOn: 1 })
+    const monthEnd = endOfMonth(periodDate)
+    const calStart = startOfWeek(periodDate, { weekStartsOn: 1 })
     const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 })
     return eachDayOfInterval({ start: calStart, end: calEnd })
-  }, [currentDate, viewMode])
+  }, [periodStart, viewMode])
 
   const weeks = useMemo(() => {
     const result: Date[][] = []
@@ -65,31 +69,22 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
   }, [events, rangeStart, rangeEnd])
 
   const dailyTodoSummary = useMemo(() => {
-    const itemsByDate = buildDailyTodoItemsByDate(notes, rangeStart, rangeEnd)
+    const itemsByDate = buildDailyTodoItemsByDate(notes, rangeStart, rangeEnd, true)
     const counts = new Map<string, number>()
-    for (const [dateStr, items] of itemsByDate) counts.set(dateStr, items.length)
+    for (const [dateStr, items] of itemsByDate) counts.set(dateStr, items.filter((item) => !item.isCompleted).length)
     if (!rangeStart || !rangeEnd) return { itemsByDate, counts }
-    const completedEventOccurrences = new Set<string>()
-    for (const note of notes) {
-      if (note.noteType !== 'daily') continue
-      for (const key of note.dailyTodo?.completedEventOccurrences || []) {
-        completedEventOccurrences.add(key)
-      }
-    }
-
     for (const [dateStr, dateEvents] of eventsByDate) {
-      const pendingRecurringKeys = new Set(
+      const pendingEventKeys = new Set(
         dateEvents
-          .filter((event) => event.recurrence)
-          .map(getEventInstanceKey)
-          .filter((key) => !completedEventOccurrences.has(key)),
+          .filter((event) => !isEventCompleted(event, completedKeys))
+          .map(getEventInstanceKey),
       )
-      if (pendingRecurringKeys.size > 0) {
-        counts.set(dateStr, (counts.get(dateStr) || 0) + pendingRecurringKeys.size)
+      if (pendingEventKeys.size > 0) {
+        counts.set(dateStr, (counts.get(dateStr) || 0) + pendingEventKeys.size)
       }
     }
     return { itemsByDate, counts }
-  }, [eventsByDate, notes, rangeStart, rangeEnd])
+  }, [eventsByDate, notes, rangeStart, rangeEnd, completedKeys])
 
   // For each week, assign consistent row positions to multi-day events
   const weekEventRows = useMemo(() => {
@@ -119,6 +114,37 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
     }
     return result
   }, [weeks, eventsByDate])
+  const weekCells = useMemo(() => weeks.map((week, wi) => {
+    const rowMap = weekEventRows[wi] || {}
+    return week.map((day) => {
+      const dateStr = format(day, 'yyyy-MM-dd')
+      const sorted = [...(eventsByDate.get(dateStr) || [])].sort((a, b) => {
+        const aMulti = !!(a.endDate && a.endDate !== a.startDate)
+        const bMulti = !!(b.endDate && b.endDate !== b.startDate)
+        if (aMulti && !bMulti) return -1
+        if (!aMulti && bMulti) return 1
+        if (aMulti && bMulti) {
+          const rowCompare = (rowMap[getEventInstanceKey(a)] ?? 99) - (rowMap[getEventInstanceKey(b)] ?? 99)
+          if (rowCompare !== 0) return rowCompare
+        }
+        return compareCalendarEventStart(a, b)
+      })
+      return {
+        day,
+        dateStr,
+        events: sorted,
+        onClick: () => useCalendarStore.getState().setCurrentDate(day),
+        onDoubleClick: () => {
+          useCalendarStore.getState().setCurrentDate(day)
+          onDayDoubleClick?.()
+        },
+        onRightClick: (event: React.MouseEvent) => {
+          event.preventDefault()
+          useCalendarStore.getState().setCurrentDate(day)
+        },
+      }
+    })
+  }), [weeks, weekEventRows, eventsByDate, onDayDoubleClick])
   const weekdayLabels = WEEKDAY_LABELS
 
   return (
@@ -150,33 +176,20 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
         style={{ borderColor: cellBorderColor || 'rgba(255,255,255,0.15)' }}
         role="rowgroup"
       >
-        {weeks.map((week, wi) => {
-          const rowMap = weekEventRows[wi] || {}
-
+        {weekCells.map((week, wi) => {
           return (
             <div key={wi} role="row" className="contents">
-              {week.map((day, di) => {
-                const dateStr = format(day, 'yyyy-MM-dd')
-
-                const sorted = [...(eventsByDate.get(dateStr) || [])].sort((a, b) => {
-                  const aMulti = !!(a.endDate && a.endDate !== a.startDate)
-                  const bMulti = !!(b.endDate && b.endDate !== b.startDate)
-                  if (aMulti && !bMulti) return -1
-                  if (!aMulti && bMulti) return 1
-                  if (aMulti && bMulti) {
-                    const rowCompare = (rowMap[getEventInstanceKey(a)] ?? 99) - (rowMap[getEventInstanceKey(b)] ?? 99)
-                    if (rowCompare !== 0) return rowCompare
-                  }
-                  return compareCalendarEventStart(a, b)
-                })
-
+              {week.map((cell, di) => {
+                const { day, dateStr } = cell
                 return (
                   <DayCell
+                    completedKeys={completedKeys}
+                    todayKey={todayKey}
                     key={`${wi}-${di}`}
                     day={day}
                     dateStr={dateStr}
-                    events={sorted}
-                    dailyTodos={dailyTodoSummary.itemsByDate.get(dateStr) || []}
+                    events={cell.events}
+                    dailyTodos={dailyTodoSummary.itemsByDate.get(dateStr) || EMPTY_TODOS}
                     dailyTodoCount={dailyTodoSummary.counts.get(dateStr) || 0}
                     isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
                     isToday={dateStr === todayKey}
@@ -188,17 +201,9 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
                     holidayStripeColor={holidayStripeColor}
                     holidayTextColor={holidayTextColor}
                     eventTextColor={eventTextColor}
-                    onClick={() => {
-                      useCalendarStore.getState().setCurrentDate(day)
-                    }}
-                    onDoubleClick={() => {
-                      useCalendarStore.getState().setCurrentDate(day)
-                      onDayDoubleClick?.()
-                    }}
-                    onRightClick={(e) => {
-                      e.preventDefault()
-                      useCalendarStore.getState().setCurrentDate(day)
-                    }}
+                    onClick={cell.onClick}
+                    onDoubleClick={cell.onDoubleClick}
+                    onRightClick={cell.onRightClick}
                   />
                 )
               })}
@@ -208,4 +213,4 @@ export function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor
       </div>
     </div>
   )
-}
+})

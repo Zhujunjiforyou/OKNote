@@ -6,8 +6,9 @@ import type { Note } from '@/types/notes.types'
 import { TodoItem } from '@/components/notes/TodoItem'
 import { EchoEventList } from '@/components/notes/EchoEventList'
 import { QuickEventForm } from '@/components/notes/QuickEventForm'
-import { Plus, MoreHorizontal } from 'lucide-react'
-import { NOTE_COLOR_PALETTE, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeHexColor } from '@/lib/utils'
+import { Plus, MoreHorizontal } from '@/components/ui/icons'
+import { NOTE_COLOR_PALETTE, focusAdjacentInteractiveElement, isImeComposing, isLightColor, normalizeHexColor, isTodoOverdue } from '@/lib/utils'
+import { useCurrentDateKey } from '@/hooks/useCurrentDateKey'
 import type { EventTag } from '@/types/tag.types'
 import type { PerWindowSettings } from '@/types/electron'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -28,6 +29,7 @@ interface DockedNoteCardProps {
 }
 
 export function DockedNoteCard({ note, isActive, attention = false, noteSettings, previewOnly = false, onDraftChange }: DockedNoteCardProps) {
+  const todayKey = useCurrentDateKey()
   const updateNote = useNotesStore((s) => s.updateNote)
   const addItem = useNotesStore((s) => s.addItem)
   const deleteNote = useNotesStore((s) => s.deleteNote)
@@ -42,9 +44,17 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
-  const titleInputRef = useRef<HTMLInputElement>(null)
+  const titleInputRef = useCallback((input: HTMLInputElement | null) => {
+    input?.focus()
+    input?.select()
+  }, [])
   const menuBtnRef = useRef<HTMLButtonElement>(null)
-  const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; dockRect: DOMRect; outside: boolean; moved: boolean; previewStarted: boolean } | null>(null)
+  const dragStateRef = useRef<{
+    id: string; pointerId: number; target: HTMLDivElement
+    startX: number; startY: number; screenX: number; screenY: number
+    dockBounds: { left: number; top: number; right: number; bottom: number }
+    outside: boolean; moved: boolean; previewStarted: boolean
+  } | null>(null)
   const previewMoveFrameRef = useRef<number | null>(null)
   const pendingPreviewMoveRef = useRef<{ x: number; y: number; outside: boolean } | null>(null)
   const undockingRef = useRef(false)
@@ -105,7 +115,6 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
   const startEditTitle = () => {
     setTitleDraft(note.title)
     setEditingTitle(true)
-    setTimeout(() => titleInputRef.current?.select(), 50)
   }
 
   const saveTitle = () => {
@@ -199,9 +208,63 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
     return () => document.removeEventListener('click', handler)
   }, [showMenu])
 
-  useEffect(() => () => {
+  const resetDrag = useCallback(() => {
+    const drag = dragStateRef.current
+    dragStateRef.current = null
     if (previewMoveFrameRef.current != null) window.cancelAnimationFrame(previewMoveFrameRef.current)
+    previewMoveFrameRef.current = null
+    pendingPreviewMoveRef.current = null
+    // End the preview before undocking can open a draft confirmation dialog.
+    if (drag?.previewStarted) window.electronAPI?.endDockDragPreview(drag.id)
+    if (drag) {
+      try { drag.target.releasePointerCapture(drag.pointerId) } catch { /* capture already released */ }
+      setIsDragging(false)
+    }
+    return drag
   }, [])
+
+  const finishDrag = useCallback((screenX: number, screenY: number, commit: boolean) => {
+    const drag = resetDrag()
+    if (!commit || !drag?.moved) return
+    // Use the release position, not a potentially stale last pointermove.
+    const b = drag.dockBounds
+    const outside = screenX < b.left - 28 || screenX > b.right + 28 ||
+      screenY < b.top - 28 || screenY > b.bottom + 28
+    if (outside && Math.hypot(screenX - drag.screenX, screenY - drag.screenY) > 24) {
+      void undockAt(screenX, screenY)
+    }
+  }, [resetDrag, undockAt])
+
+  useEffect(() => () => { resetDrag() }, [resetDrag])
+  useEffect(() => {
+    const up = (event: PointerEvent) => {
+      if (dragStateRef.current?.pointerId === event.pointerId) finishDrag(event.screenX, event.screenY, true)
+    }
+    const cancelPointer = (event: PointerEvent) => {
+      if (dragStateRef.current?.pointerId === event.pointerId) resetDrag()
+    }
+    const cancel = () => { resetDrag() }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && dragStateRef.current) { event.preventDefault(); resetDrag() }
+    }
+    const visibility = () => { if (document.hidden) resetDrag() }
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', cancelPointer, true)
+    window.addEventListener('blur', cancel)
+    window.addEventListener('keydown', key)
+    document.addEventListener('visibilitychange', visibility)
+    const unsubscribe = window.electronAPI?.onDockDragEnded(({ dragId, x, y, canceled }) => {
+      if (dragStateRef.current?.id === dragId) finishDrag(x, y, !canceled)
+    })
+    return () => {
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', cancelPointer, true)
+      window.removeEventListener('blur', cancel)
+      window.removeEventListener('keydown', key)
+      document.removeEventListener('visibilitychange', visibility)
+      unsubscribe?.()
+    }
+  }, [finishDrag, resetDrag])
 
   const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -235,17 +298,19 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
     if (target.closest('button,input,textarea,[data-no-card-drag]')) return
     const dockArea = target.closest('[data-dock-area]') as HTMLElement | null
     if (!dockArea) return
+    resetDrag()
+    const rect = dockArea.getBoundingClientRect()
+    const offsetX = e.screenX - e.clientX
+    const offsetY = e.screenY - e.clientY
     dragStateRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      dockRect: dockArea.getBoundingClientRect(),
-      outside: false,
-      moved: false,
-      previewStarted: false,
+      id: crypto.randomUUID(), pointerId: e.pointerId, target: e.currentTarget,
+      startX: e.clientX, startY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+      dockBounds: { left: rect.left + offsetX, top: rect.top + offsetY, right: rect.right + offsetX, bottom: rect.bottom + offsetY },
+      outside: false, moved: false, previewStarted: false,
     }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }, [editingTitle])
+    e.preventDefault()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { resetDrag() }
+  }, [editingTitle, resetDrag])
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const dragState = dragStateRef.current
@@ -256,19 +321,19 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
     if (distance <= 6 && !dragState.moved) return
     dragState.moved = true
 
-    const { dockRect } = dragState
+    const { dockBounds } = dragState
     const outsideDock =
-      e.clientX < dockRect.left - 28 ||
-      e.clientX > dockRect.right + 28 ||
-      e.clientY < dockRect.top - 28 ||
-      e.clientY > dockRect.bottom + 28
+      e.screenX < dockBounds.left - 28 ||
+      e.screenX > dockBounds.right + 28 ||
+      e.screenY < dockBounds.top - 28 ||
+      e.screenY > dockBounds.bottom + 28
 
     dragState.outside = outsideDock && distance > 24
     setIsDragging(true)
     if (window.electronAPI?.isElectron) {
       if (!dragState.previewStarted) {
         dragState.previewStarted = true
-        window.electronAPI.beginDockDragPreview(note, e.screenX, e.screenY)
+        window.electronAPI.beginDockDragPreview(note, e.screenX, e.screenY, dragState.id, dragState.dockBounds)
       }
       pendingPreviewMoveRef.current = { x: e.screenX, y: e.screenY, outside: dragState.outside }
       if (previewMoveFrameRef.current == null) {
@@ -276,33 +341,18 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
           previewMoveFrameRef.current = null
           const pending = pendingPreviewMoveRef.current
           pendingPreviewMoveRef.current = null
-          if (pending) window.electronAPI?.moveDockDragPreview(pending.x, pending.y, pending.outside)
+          if (pending) window.electronAPI?.moveDockDragPreview(pending.x, pending.y, pending.outside, dragState.id)
         })
       }
     }
   }, [note])
 
   const handlePointerEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const dragState = dragStateRef.current
-    if (dragState?.pointerId === e.pointerId) {
-      if (dragState.outside && dragState.moved) {
-        void undockAt(e.screenX, e.screenY)
-      }
-      if (window.electronAPI?.isElectron && dragState.previewStarted) {
-        if (previewMoveFrameRef.current != null) {
-          window.cancelAnimationFrame(previewMoveFrameRef.current)
-          previewMoveFrameRef.current = null
-        }
-        const pending = pendingPreviewMoveRef.current
-        pendingPreviewMoveRef.current = null
-        if (pending) window.electronAPI.moveDockDragPreview(pending.x, pending.y, pending.outside)
-        window.electronAPI.endDockDragPreview()
-      }
-      dragStateRef.current = null
-      setIsDragging(false)
-      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
-    }
-  }, [undockAt])
+    if (dragStateRef.current?.pointerId === e.pointerId) finishDrag(e.screenX, e.screenY, true)
+  }, [finishDrag])
+  const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current?.pointerId === e.pointerId) resetDrag()
+  }, [resetDrag])
 
   if (previewOnly) {
     return (
@@ -328,7 +378,7 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
         </div>
         <div className="flex-1 overflow-hidden px-2.5 py-1 text-[0.7em] opacity-55">
           {isEcho ? '事件视图' : (note.items || []).length > 0 ? (note.items || []).slice(0, 4).map((item) => (
-            <div key={item.id} className={`truncate py-0.5 ${item.isCompleted ? 'line-through opacity-50' : ''}`}>{item.content}</div>
+            <div key={item.id} className={`truncate py-0.5 ${item.isCompleted ? 'task-completed' : isTodoOverdue(item, todayKey) ? 'task-overdue' : ''}`}>{item.content}</div>
           )) : (isDaily ? '今日暂无事项' : '空白便签')}
         </div>
       </div>
@@ -361,7 +411,8 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
-        onPointerCancel={handlePointerEnd}
+        onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={handlePointerCancel}
       >
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {editingTitle ? (
@@ -468,7 +519,7 @@ export function DockedNoteCard({ note, isActive, attention = false, noteSettings
             ) : (
               <div className="flex flex-col gap-0.5">
                 {(note.items || []).map((item) => (
-                  <TodoItem key={item.id} item={item} note={note} onDraftChange={handleTodoDraftChange} />
+                  <TodoItem key={item.id} item={item} noteId={note.id} noteColor={note.color} onDraftChange={handleTodoDraftChange} />
                 ))}
                 {(note.items || []).length === 0 && (
                   <div className="py-6 text-center text-[0.7em] opacity-20">暂无待办</div>

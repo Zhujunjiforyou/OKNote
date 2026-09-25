@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import { getLocalDateKey } from '@/lib/utils'
 
 function millisecondsUntilNextDay() {
@@ -8,28 +8,31 @@ function millisecondsUntilNextDay() {
   return Math.max(250, next.getTime() - now.getTime())
 }
 
-export function useCurrentDateKey() {
-  const [dateKey, setDateKey] = useState(getLocalDateKey)
-
-  useEffect(() => {
-    let timer = 0
-    const refresh = () => {
-      setDateKey(getLocalDateKey())
-      window.clearTimeout(timer)
-      timer = window.setTimeout(refresh, millisecondsUntilNextDay())
-    }
-    const refreshWhenActive = () => {
-      if (document.visibilityState === 'visible') refresh()
-    }
+// All task rows share one clock, including large notes with hundreds of items.
+const subscribers = new Set<() => void>()
+let timer = 0
+function refresh() {
+  subscribers.forEach((subscriber) => subscriber())
+  window.clearTimeout(timer)
+  timer = window.setTimeout(refresh, millisecondsUntilNextDay())
+}
+function refreshWhenActive() { if (document.visibilityState === 'visible') refresh() }
+function subscribe(callback: () => void) {
+  subscribers.add(callback)
+  if (subscribers.size === 1) {
     timer = window.setTimeout(refresh, millisecondsUntilNextDay())
     window.addEventListener('focus', refresh)
     document.addEventListener('visibilitychange', refreshWhenActive)
-    return () => {
+  }
+  return () => {
+    subscribers.delete(callback)
+    if (!subscribers.size) {
       window.clearTimeout(timer)
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refreshWhenActive)
     }
-  }, [])
-
-  return dateKey
+  }
+}
+export function useCurrentDateKey() {
+  return useSyncExternalStore(subscribe, getLocalDateKey, getLocalDateKey)
 }

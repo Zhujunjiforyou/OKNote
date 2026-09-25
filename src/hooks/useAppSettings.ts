@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { AllSettings, PerWindowSettings } from '@/types/electron'
+import { defaultSystemFont } from '@/lib/platform'
 
 type WindowType = 'calendar' | 'notes'
 
 const perWindowDefaults: PerWindowSettings = {
-  fontFamily: 'Inter',
+  fontFamily: defaultSystemFont,
   fontSize: 14,
   backgroundColor: '#1C1C1E',
   backgroundOpacity: 0.88,

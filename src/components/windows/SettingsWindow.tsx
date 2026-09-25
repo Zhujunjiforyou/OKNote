@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Sun, Moon, Globe, CalendarDays, StickyNote, ListTodo, Trash2, Eye, EyeOff, Tag, RotateCcw } from 'lucide-react'
+import { X, Sun, Moon, Globe, CalendarDays, StickyNote, ListTodo, Trash2, Eye, EyeOff, Tag, RotateCcw } from '@/components/ui/icons'
+import { defaultSystemFont, systemFontStack } from '@/lib/platform'
 import { APP_COLOR_PALETTE, generateId, isImeComposing } from '@/lib/utils'
 import { useTagStore } from '@/stores/tag.store'
 import { reportPersistenceIssue } from '@/stores/persistence.store'
@@ -9,6 +10,7 @@ import { clampFontSize } from '@/lib/typography'
 import type { PerWindowSettings } from '@/types/electron'
 import { AppearancePanel } from '@/components/settings/AppearancePanel'
 import { GlobalFontPanel } from '@/components/settings/GlobalFontPanel'
+import { SystemNotificationStatus } from '@/components/SystemNotificationStatus'
 
 type SettingsTab = 'global' | 'calendar' | 'notes' | 'manage' | 'tags'
 
@@ -27,7 +29,7 @@ const SETTINGS_TABS = [
 
 export function SettingsWindow() {
   const [themeMode, setThemeMode] = useState<'dark' | 'light'>('dark')
-  const [globalFontFamily, setGlobalFontFamily] = useState('Microsoft YaHei')
+  const [globalFontFamily, setGlobalFontFamily] = useState(defaultSystemFont)
   const [globalFontSize, setGlobalFontSize] = useState(14)
   const [calendarSettings, setCalendarSettings] = useState<PerWindowSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7', edgeAutoHide: true, showDockArea: true })
   const [notesSettings, setNotesSettings] = useState<PerWindowSettings>({ fontFamily: 'Inter', fontSize: 14, backgroundColor: '#1C1C1E', backgroundOpacity: 0.88, textColor: '#F5F5F7' })
@@ -36,6 +38,7 @@ export function SettingsWindow() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('global')
   const [fontsLoaded, setFontsLoaded] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
+  const [autoLaunchMessage, setAutoLaunchMessage] = useState('')
   const [startMinimized, setStartMinimized] = useState(false)
   const [hideNotificationContent, setHideNotificationContent] = useState(false)
   const dirtyRef = useRef(false)
@@ -113,9 +116,10 @@ export function SettingsWindow() {
       window.electronAPI.getSettings().then((all) => {
         setThemeMode(all.themeMode)
         setAutoLaunch(all.autoLaunch ?? false)
+        setAutoLaunchMessage(all.autoLaunchMessage || '')
         setStartMinimized(all.startMinimized ?? false)
         setHideNotificationContent(all.hideNotificationContent ?? false)
-        setGlobalFontFamily(all.globalFontFamily || 'Microsoft YaHei')
+        setGlobalFontFamily(all.globalFontFamily || defaultSystemFont)
         setGlobalFontSize(clampFontSize(all.globalFontSize || 14))
         setCalendarSettings({ ...all.calendar, fontSize: clampFontSize(all.calendar.fontSize) })
         setNotesSettings({ ...all.notes, fontSize: clampFontSize(all.notes.fontSize) })
@@ -141,9 +145,10 @@ export function SettingsWindow() {
         if (dirtyRef.current) return
         setThemeMode(all.themeMode)
         setAutoLaunch(all.autoLaunch ?? false)
+        setAutoLaunchMessage(all.autoLaunchMessage || '')
         setStartMinimized(all.startMinimized ?? false)
         setHideNotificationContent(all.hideNotificationContent ?? false)
-        setGlobalFontFamily(all.globalFontFamily || 'Microsoft YaHei')
+        setGlobalFontFamily(all.globalFontFamily || defaultSystemFont)
         setGlobalFontSize(clampFontSize(all.globalFontSize || 14))
         setCalendarSettings({ ...all.calendar, fontSize: clampFontSize(all.calendar.fontSize) })
         setNotesSettings({ ...all.notes, fontSize: clampFontSize(all.notes.fontSize) })
@@ -291,8 +296,7 @@ export function SettingsWindow() {
     <div
       className="settings-window h-screen w-screen flex flex-col overflow-hidden"
       style={{
-        fontFamily: '"Microsoft YaHei", system-ui, sans-serif',
-        fontSize: '13px',
+        fontFamily: systemFontStack,
         color: textColor,
         ['--settings-text' as string]: textColor,
         ['--settings-border' as string]: isDark ? 'rgba(255,255,255,0.11)' : 'rgba(60,60,67,0.16)',
@@ -322,7 +326,7 @@ export function SettingsWindow() {
         </button>
       </div>
 
-      <div className="relative flex min-h-0 flex-1">
+      <div className="settings-body relative flex min-h-0 flex-1">
         {/* Section navigation */}
         <nav className="settings-sidebar flex w-[132px] shrink-0 flex-col gap-1 border-r p-3" style={{ borderColor: `${textColor}0d` }} aria-label="设置分类">
           {SETTINGS_TABS.map(({ id, icon: Icon, label }) => (
@@ -340,7 +344,7 @@ export function SettingsWindow() {
 
         {/* Content */}
         <main ref={settingsContentRef} className="settings-content min-w-0 flex-1 overflow-auto px-5 pb-5 pt-4">
-          <div className="mb-5 border-b pb-4" style={{ borderColor: `${textColor}0d` }}>
+          <div className="settings-section-heading mb-5 border-b pb-4" style={{ borderColor: `${textColor}0d` }}>
             <h1 className="text-[16px] font-semibold tracking-tight">{activeTabMeta.label}</h1>
             <p className="mt-1 text-[11px] leading-relaxed" style={{ opacity: mutedO }}>{activeTabMeta.description}</p>
           </div>
@@ -350,7 +354,7 @@ export function SettingsWindow() {
             </div>
           )}
         {activeTab === 'global' && (
-          <div className="space-y-5">
+          <div className="settings-sections space-y-5">
             {/* Theme */}
             <div>
               <label className="text-[11px] font-semibold uppercase tracking-widest mb-2 block" style={{ opacity: labelO }}>主题风格</label>
@@ -387,7 +391,7 @@ export function SettingsWindow() {
             <div>
               <label className="text-[11px] font-semibold uppercase tracking-widest opacity-45 mb-2 block">系统</label>
               <div className="settings-toggle-row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 py-2">
-                <span className="min-w-0 text-xs opacity-60">开机自动启动</span>
+                <span className="min-w-0 text-xs opacity-60">开机自动启动{autoLaunchMessage && <span className="mt-1 block leading-relaxed" role="status">{autoLaunchMessage}</span>}</span>
                 <button
                   onClick={async () => {
                     const next = !autoLaunch
@@ -396,6 +400,7 @@ export function SettingsWindow() {
                     if (!window.electronAPI?.isElectron) return
                     const result = await window.electronAPI.setAutoLaunch(next)
                     setAutoLaunch(result.enabled)
+                    setAutoLaunchMessage(result.ok ? result.message || '' : '')
                     if (!result.ok) reportPersistenceIssue('开机启动设置未生效', result.message || '系统拒绝了该设置。')
                   }}
                   className={`settings-toggle relative h-6 w-10 shrink-0 rounded-full transition-colors ${
@@ -461,6 +466,7 @@ export function SettingsWindow() {
                   <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${hideNotificationContent ? 'translate-x-4' : 'translate-x-0'}`} />
                 </button>
               </div>
+              <SystemNotificationStatus />
             </div>
 
             <hr style={{ borderColor: dividerColor }} />
@@ -485,7 +491,7 @@ export function SettingsWindow() {
 
             <hr style={{ borderColor: dividerColor }} />
 
-            <div className="rounded-xl border p-4 text-[11px] leading-relaxed" style={{ borderColor: `${textColor}10`, opacity: isDark ? 0.62 : 0.72, background: 'var(--settings-panel)' }}>
+            <div className="settings-font-hint rounded-xl border p-4 text-[11px] leading-relaxed" style={{ borderColor: `${textColor}10`, opacity: isDark ? 0.62 : 0.72, background: 'var(--settings-panel)' }}>
               通用字体是批量同步入口，会同时更新日历和便签。
               <br />需要单独微调时，再进入「日历」或「便签」调整对应窗口。
             </div>
@@ -544,7 +550,7 @@ export function SettingsWindow() {
 
         {activeTab === 'manage' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[11px] opacity-55">管理已保存的便签（包括已隐藏的便签）</p>
               <div className="flex shrink-0 items-center gap-1.5">
                 <button
@@ -732,7 +738,7 @@ export function SettingsWindow() {
 
         {activeTab === 'tags' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[11px] opacity-55">管理事件分类标签</p>
               <button
                 type="button"

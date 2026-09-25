@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CalendarEvent } from '@/types/calendar.types'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useTagStore } from '@/stores/tag.store'
-import { cn, focusAdjacentInteractiveElement, getEventInstanceKey, hexToLuminance, isDateKey, normalizeHexColor, type CalendarTodoPreview } from '@/lib/utils'
+import { cn, focusAdjacentInteractiveElement, getEventInstanceKey, hexToLuminance, isDateKey, normalizeHexColor, isEventCompleted, isTodoOverdue, type CalendarTodoPreview } from '@/lib/utils'
+import { openTodoSource } from '@/lib/todo-navigation'
 import { isHolidayLabelDay } from '@/lib/holidays'
 import { format, isSameDay } from 'date-fns'
-import { CalendarPlus, CalendarRange, ListTodo } from 'lucide-react'
+import { CalendarPlus, CalendarRange, ListTodo } from '@/components/ui/icons'
 
 const CONTEXT_MENU_WIDTH = 224
 const CONTEXT_MENU_HEIGHT = 150
@@ -31,6 +32,8 @@ function getReadableEventTextColor(color: string): string {
 }
 
 interface DayCellProps {
+  completedKeys?: ReadonlySet<string>
+  todayKey?: string
   day: Date
   dateStr: string
   events: CalendarEvent[]
@@ -51,16 +54,37 @@ interface DayCellProps {
   onRightClick: (e: React.MouseEvent) => void
 }
 
-export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, adjustedWorkday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, onClick, onDoubleClick, onRightClick, dateStr }: DayCellProps) {
-  const currentDate = useCalendarStore((s) => s.currentDate)
+export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, adjustedWorkday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, onClick, onDoubleClick, onRightClick, dateStr, completedKeys, todayKey = format(new Date(), 'yyyy-MM-dd') }: DayCellProps) {
+  const isSelected = useCalendarStore((s) => isSameDay(day, s.currentDate))
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
   const setMultiDayMode = useCalendarStore((s) => s.setMultiDayMode)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const cellRef = useRef<HTMLDivElement>(null)
   const eventListRef = useRef<HTMLDivElement>(null)
-  const isSelected = isSameDay(day, currentDate)
   const isSupportedDate = isDateKey(dateStr)
+
+  useEffect(() => {
+    if (!isSelected) return
+    const cell = cellRef.current
+    const viewport = cell?.closest('.calendar-grid-scroll')
+    if (!cell || !viewport) return
+    let frame = 0
+    const revealSelection = () => {
+      window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
+        cell.firstElementChild?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      })
+    }
+    revealSelection()
+    const observer = new ResizeObserver(revealSelection)
+    observer.observe(viewport)
+    observer.observe(cell)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [isSelected, dateStr])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -267,7 +291,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
           ? `${format(day, 'yyyy年M月d日')}${holiday ? `，${holiday}放假` : ''}${adjustedWorkday ? `，${adjustedWorkday}` : ''}，${events.length} 个事件${dailyTodoCount > 0 ? `，${dailyTodoCount} 个未完成待办` : ''}`
           : `${format(day, 'yyyy年M月d日')}，超出支持范围，不可选择`}
         className={cn(
-          'relative transition-colors group flex flex-col overflow-hidden border',
+          'calendar-day-cell relative transition-colors group flex flex-col overflow-hidden border',
           isSupportedDate ? 'cursor-pointer hover:bg-accent/20' : 'cursor-not-allowed opacity-[0.42]',
           isToday && 'bg-primary/6 border-primary/25',
           isSelected && !isToday && 'ring-1 ring-inset ring-primary/40 bg-primary/4',
@@ -283,7 +307,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
         }}
       >
         {/* Day number + holiday name */}
-        <div className={cn('flex flex-wrap shrink-0 items-center gap-x-1 gap-y-0.5 min-w-0', compact ? 'min-h-6' : 'min-h-7')}>
+        <div className={cn('calendar-day-header shrink-0 min-w-0', compact ? 'min-h-6' : 'min-h-7')}>
           <span
             className={cn(
               'calendar-day-number inline-flex items-center justify-center rounded-full shrink-0 font-semibold',
@@ -296,20 +320,24 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
           >
             {day.getDate()}
           </span>
-          {holiday && (showHolidayLabel || isHolidayLabelDay(dateStr)) && (
-            <span
-              className={cn(
-                'min-w-0 truncate font-medium',
-                compact ? 'text-[0.72em]' : 'text-[0.76em]',
+          {((holiday && (showHolidayLabel || isHolidayLabelDay(dateStr))) || adjustedWorkday) && (
+            <div className="calendar-day-meta flex min-w-0 items-center gap-1">
+              {holiday && (showHolidayLabel || isHolidayLabelDay(dateStr)) && (
+                <span
+                  className={cn(
+                    'min-w-0 truncate font-medium',
+                    compact ? 'text-[0.72em]' : 'text-[0.76em]',
+                  )}
+                  style={holidayTextColor ? { color: holidayTextColor } : undefined}
+                  title={holiday}
+                >
+                  {holiday}
+                </span>
               )}
-              style={holidayTextColor ? { color: holidayTextColor } : undefined}
-              title={holiday}
-            >
-              {holiday}
-            </span>
-          )}
-          {adjustedWorkday && (
-            <span className="day-adjusted-workday shrink-0 rounded px-1 text-[0.7em] font-semibold" title={adjustedWorkday}>班</span>
+              {adjustedWorkday && (
+                <span className="day-adjusted-workday shrink-0 rounded px-1 text-[0.7em] font-semibold" title={adjustedWorkday}>班</span>
+              )}
+            </div>
           )}
           {isSupportedDate && dailyTodoCount > 0 && (
             <button
@@ -320,10 +348,10 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
               }}
               onKeyDown={(event) => event.stopPropagation()}
               className={cn(
-                'daily-calendar-chip z-10 ml-auto inline-flex shrink-0 items-center justify-center gap-0.5 whitespace-nowrap rounded px-1 font-semibold leading-none',
+                'daily-calendar-chip z-10 inline-flex shrink-0 items-center justify-center gap-0.5 whitespace-nowrap rounded px-1 font-semibold leading-none',
                 compact ? 'text-[0.7em]' : 'text-[0.74em]'
               )}
-              title={`${dateStr} 有 ${dailyTodoCount} 个未完成待办（含未完成的循环事件），点击打开每日待办`}
+              title={`${dateStr} 有 ${dailyTodoCount} 个未完成待办（含未完成的事件），点击打开每日待办`}
               aria-label={`打开 ${dateStr} 的每日待办，共 ${dailyTodoCount} 个未完成项`}
             >
               <ListTodo className="calendar-todo-icon" aria-hidden="true" />
@@ -340,10 +368,10 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                window.electronAPI?.createNote({ noteType: 'daily', title: '每日待办', activeDate: dateStr })
+                void openTodoSource(todo)
               }}
               onKeyDown={(event) => event.stopPropagation()}
-              className="calendar-todo-preview flex min-h-5 w-full min-w-0 items-center gap-1 rounded-sm px-1 text-left text-[0.76em] font-medium leading-tight transition-colors"
+              className={cn('calendar-todo-preview flex min-h-5 w-full min-w-0 items-center gap-1 rounded-sm px-1 text-left text-[0.76em] font-medium leading-tight transition-colors', todo.isCompleted && 'task-completed', isTodoOverdue(todo, todayKey) && 'task-overdue')}
               title={`待办：${todo.content}`}
               aria-label={`打开待办：${todo.content}`}
             >
@@ -383,6 +411,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
                 className={cn(
                   'flex min-h-5 max-w-full min-w-0 items-center gap-0.5 text-[0.76em] leading-tight truncate cursor-pointer transition-opacity hover:opacity-75',
                   'font-medium',
+                  isEventCompleted(event, completedKeys) && 'calendar-event-completed',
                   roundingClass
                 )}
                 style={{
@@ -397,7 +426,7 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
                 {event.tagId && (
                   <TagDot tagId={event.tagId} />
                 )}
-                <span className="truncate">{event.title}</span>
+                <span className="calendar-event-title truncate">{event.title}</span>
               </div>
             )
           })}
@@ -406,4 +435,4 @@ export function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCu
       </div>
     </>
   )
-}
+})

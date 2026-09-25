@@ -1,3 +1,5 @@
+const { isEventCompleted } = require('./event-completion.cjs');
+
 function buildReminderKey(event, minutesBefore) {
   return `${event.seriesId || event.id}|${event.startDate}|${event.startTime || 'all-day'}|${minutesBefore}`;
 }
@@ -23,7 +25,7 @@ function collectDueReminders(options) {
   const due = [];
   for (const event of events) {
     const reminder = event && event.reminder;
-    if (!reminder || reminder.enabled !== true) continue;
+    if (!reminder || reminder.enabled !== true || isEventCompleted(event)) continue;
     const startMs = getStartMillis(event);
     if (!Number.isFinite(startMs)) continue;
     const minutesBefore = Math.max(0, Number(reminder.minutesBefore) || 0);

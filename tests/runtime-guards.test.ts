@@ -126,10 +126,9 @@ describe('critical Electron workflow wiring', () => {
     expect(readmeSource).toContain('Node.js >= 22.12')
   })
 
-  it('lets daily notes read recurring events without a renderer permission gate', () => {
+  it('lets daily notes read events without a renderer permission gate', () => {
     expect(mainSource).toContain("ipcMain.handle('get-events-state',()=>getEventsState())")
     expect(dailyTodoSource).toContain('getEventsState().then')
-    expect(dailyTodoSource).toContain('.filter((event) => event.recurrence)')
   })
 
   it('retries failed event reads before reminder scanning and does not checkpoint an unreadable file', () => {
@@ -222,7 +221,7 @@ describe('critical Electron workflow wiring', () => {
   })
 
   it('verifies the exact --hidden login registration and exposes a result-returning IPC', () => {
-    expect(mainSource).toContain("app.getLoginItemSettings({ path: process.execPath, args: desiredArgs })")
+    expect(mainSource).toContain("app.getLoginItemSettings({ path: options.path, args: options.args })")
     expect(mainSource).toContain("ipcMain.handle('set-start-minimized'")
     expect(preloadSource).toContain("ipcRenderer.invoke('set-start-minimized'")
   })
