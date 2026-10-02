@@ -41,7 +41,7 @@ function parseFontNames(stdout, platform = process.platform) {
 function loginItemOptions(settings, platform = process.platform, executable = process.execPath) {
   const openAtLogin = settings.autoLaunch === true;
   if (platform === 'darwin') return { openAtLogin };
-  return { openAtLogin, path: executable, args: openAtLogin && settings.startMinimized ? ['--hidden'] : [] };
+  return { openAtLogin, name: 'com.oknote.app', path: executable, args: openAtLogin && settings.startMinimized ? ['--hidden'] : [] };
 }
 
 function shouldStartHidden(settings, loginState, argv = process.argv, platform = process.platform) {

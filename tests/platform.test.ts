@@ -38,7 +38,7 @@ describe('desktop platform integration', () => {
 
   it('registers Windows executable arguments, but does not pass them to macOS login items', () => {
     const settings = { autoLaunch: true, startMinimized: true }
-    expect(loginItemOptions(settings, 'win32', 'C:\\Apps\\OKNote.exe')).toEqual({ openAtLogin: true, path: 'C:\\Apps\\OKNote.exe', args: ['--hidden'] })
+    expect(loginItemOptions(settings, 'win32', 'C:\\Apps\\OKNote.exe')).toEqual({ openAtLogin: true, name: 'com.oknote.app', path: 'C:\\Apps\\OKNote.exe', args: ['--hidden'] })
     expect(loginItemOptions(settings, 'darwin', '/Applications/OKNote.app')).toEqual({ openAtLogin: true })
     expect(loginItemOptions({ ...settings, autoLaunch: false }, 'win32', 'app').args).toEqual([])
   })

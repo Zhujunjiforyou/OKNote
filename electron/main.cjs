@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { APP_NAME, notificationIdentity, registerNotificationIdentity } = require('./notification-identity.cjs');
-const { defaultFont, fallbackFonts, fontQuery, parseFontNames, loginItemOptions, shouldStartHidden, macMenuTemplate } = require('./platform.cjs');
+const { defaultFont, fallbackFonts, fontQuery, parseFontNames, shouldStartHidden, macMenuTemplate } = require('./platform.cjs');
 const { pathToFileURL } = require('url');
 const { createFullTidyRegion, createPreferredTidyRegions, packTidyItemsResponsive } = require('./tidy-layout.cjs');
 const {
@@ -34,7 +34,7 @@ const { createCalendarPresentation } = require('./calendar-presentation.cjs');
 const { waitForNativeNotification } = require('./notification-delivery.cjs');
 const { notificationSettingsState, suppressNotificationFallback } = require('./notification-settings.cjs');
 const calendarPresentation = createCalendarPresentation(configureDesktopWindow, app);
-const { macLoginItemState, setMacLoginItem } = require('./login-item-state.cjs');
+const { setWindowsLoginItem, macLoginItemState, setMacLoginItem } = require('./login-item-state.cjs');
 const { watchMouseRelease } = require('./drag-release-watch.cjs');
 const {
   canonicalNoteFileNames,
@@ -437,21 +437,13 @@ function saveSettings() {
     return false;
   }
 }
-function applyLoginItemSettings() {
-  // Isolated verification must not modify the real account's login items.
-  if (isIsolatedTestInstance) return { ok: true, enabled: appSettings.autoLaunch, startMinimized: appSettings.startMinimized };
+function applyLoginItemSettings(explicitEnable = false) {
+  // Development and isolated verification must not register electron.exe or
+  // modify the real account's installed application's login item.
+  if (isIsolatedTestInstance || (process.platform === 'win32' && !app.isPackaged)) return { ok: true, enabled: appSettings.autoLaunch, startMinimized: appSettings.startMinimized };
   try {
     if(process.platform === 'darwin') return { ...setMacLoginItem(app, appSettings.autoLaunch), startMinimized: appSettings.startMinimized };
-    const options = loginItemOptions(appSettings);
-    app.setLoginItemSettings(options);
-    // Query the exact executable + argument registration. A generic query can
-    // report openAtLogin=true even when Windows dropped the --hidden argument.
-    const actual = app.getLoginItemSettings({ path: options.path, args: options.args });
-    return {
-      ok: actual.openAtLogin === appSettings.autoLaunch,
-      enabled: actual.openAtLogin,
-      startMinimized: appSettings.startMinimized,
-    };
+    return setWindowsLoginItem(app, appSettings, explicitEnable);
   } catch (error) {
     console.error('applyLoginItemSettings failed:', error.message);
     return { ok: false, enabled: false, message: error.message };
@@ -2770,7 +2762,7 @@ function setupIPC(){
   ipcMain.handle('get-notification-settings',()=>getSystemNotificationSettings());
   ipcMain.handle('set-auto-launch',(_event,enabled)=>{
     appSettings.autoLaunch=!!enabled;
-    const result=applyLoginItemSettings();
+    const result=applyLoginItemSettings(appSettings.autoLaunch);
     if(!result.ok){
       appSettings.autoLaunch=!!result.enabled;
       return {ok:false,enabled:appSettings.autoLaunch,message:'系统未接受开机启动设置'};

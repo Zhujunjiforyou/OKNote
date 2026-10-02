@@ -221,7 +221,7 @@ describe('critical Electron workflow wiring', () => {
   })
 
   it('verifies the exact --hidden login registration and exposes a result-returning IPC', () => {
-    expect(mainSource).toContain("app.getLoginItemSettings({ path: options.path, args: options.args })")
+    expect(mainSource).toContain('return setWindowsLoginItem(app, appSettings, explicitEnable)')
     expect(mainSource).toContain("ipcMain.handle('set-start-minimized'")
     expect(preloadSource).toContain("ipcRenderer.invoke('set-start-minimized'")
   })
