@@ -1384,6 +1384,7 @@ html.electron-transparent #root {
 }
 
 .day-event-list {
+  overscroll-behavior-y: contain;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--calendar-text) 24%, transparent) transparent;
 }
@@ -1482,12 +1483,50 @@ html.electron-transparent #root {
 
 /* Viewport-aware calendar density */
 .calendar-window .calendar-grid-scroll {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-height: 0;
   overscroll-behavior: contain;
 }
 
 .calendar-window .month-grid {
   min-width: var(--calendar-grid-min-width);
+}
+
+.month-grid-body {
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  scrollbar-width: none;
+}
+
+.month-grid-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.calendar-week-row > .calendar-day-cell {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Geometry must update atomically with scrollTop. The global reduced-motion
+   duration also applies to otherwise unanimated elements. */
+.calendar-week-space,
+.calendar-week-row {
+  transition: none !important;
+}
+
+.calendar-day-cell[data-outside-month] {
+  background-color: var(--calendar-outside-bg, rgba(128, 128, 128, 0.13));
+}
+
+.calendar-month-marker {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calendar-window:not(.calendar-collapsed) .cal-titlebar {
@@ -1580,22 +1619,6 @@ html.electron-transparent #root {
 
 .calendar-type-max [role="gridcell"] {
   padding: 2px !important;
-}
-
-.calendar-type-max .calendar-grid-scroll {
-  overflow: auto !important;
-  overscroll-behavior: contain;
-}
-
-.calendar-type-max .month-grid {
-  min-width: var(--calendar-grid-min-width);
-  min-height: calc(var(--calendar-grid-min-height) + 2em);
-}
-
-.calendar-type-max .month-grid-body {
-  flex: 0 0 auto;
-  height: var(--calendar-grid-min-height);
-  min-height: var(--calendar-grid-min-height);
 }
 
 .calendar-type-max .calendar-day-number {

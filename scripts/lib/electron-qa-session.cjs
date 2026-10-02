@@ -68,7 +68,7 @@ async function click(client, selector, text) {
   await client.call('Page.bringToFront');
   const point = await waitUntil(() => client.evaluate(`
     const elements = [...document.querySelectorAll(${JSON.stringify(selector)})];
-    const target = elements.find((el) => el.getClientRects().length && !el.closest('[aria-hidden="true"]')
+    const target = elements.find((el) => el.getClientRects().length && !el.closest('[aria-hidden="true"], [inert]')
       && (${JSON.stringify(text)} === undefined || el.textContent.trim() === ${JSON.stringify(text)}));
     if (!target) return null;
     target.scrollIntoView({ block: 'nearest' });

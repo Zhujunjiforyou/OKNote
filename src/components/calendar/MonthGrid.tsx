@@ -1,21 +1,19 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useCalendarStore } from '@/stores/calendar.store'
 import { useNotesStore } from '@/stores/notes.store'
 import {
-  startOfMonth,
-  endOfMonth,
-  startOfWeek,
-  endOfWeek,
+  addDays,
   eachDayOfInterval,
   isSameMonth,
   format,
-  parseISO,
 } from 'date-fns'
 import { DayCell } from './DayCell'
 import { getAdjustedWorkday, getHoliday } from '@/lib/holidays'
 import type { CalendarEvent } from '@/types/calendar.types'
 import { buildDailyTodoItemsByDate, buildEventsByDate, compareCalendarEventStart, getEventInstanceKey, isEventCompleted, legacyCompletedEventKeys, type CalendarTodoPreview } from '@/lib/utils'
+import { CALENDAR_WEEK_COUNT, calendarWeekDate, calendarWeekIndex } from '@/lib/calendar-viewport'
+import { useCalendarViewport } from '@/hooks/useCalendarViewport'
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const EMPTY_TODOS: CalendarTodoPreview[] = []
@@ -29,27 +27,22 @@ interface MonthGridProps {
   eventTextColor?: string
   onDayDoubleClick?: () => void
   todayKey?: string
+  blocked?: boolean
 }
 
-export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick, todayKey }: MonthGridProps) {
-  const currentDate = useCalendarStore((s) => s.currentDate)
+export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = 'month', cellBorderColor, holidayStripeColor, holidayTextColor, eventTextColor, onDayDoubleClick, todayKey, blocked = false }: MonthGridProps) {
+  const browseDate = useCalendarStore((s) => s.browseDate)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const scrollPositions = useRef(new Map<string, number>())
+  const { rootRef, viewportRef, spaceRef, range } = useCalendarViewport(viewMode, blocked || menuOpen)
   const events = useCalendarStore((s) => s.events)
   const notes = useNotesStore(useShallow((s) => s.notes.filter((note) =>
     note.items.some((item) => !!item.todoDate) || !!note.dailyTodo?.completedEventOccurrences?.length)))
   const completionKey = JSON.stringify([...legacyCompletedEventKeys(notes)].sort())
   const completedKeys = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(completionKey)), [completionKey])
-  const periodStart = format(viewMode === 'week' ? startOfWeek(currentDate, { weekStartsOn: 1 }) : startOfMonth(currentDate), 'yyyy-MM-dd')
-
   const days = useMemo(() => {
-    const periodDate = parseISO(periodStart)
-    if (viewMode === 'week') {
-      return eachDayOfInterval({ start: periodDate, end: endOfWeek(periodDate, { weekStartsOn: 1 }) })
-    }
-    const monthEnd = endOfMonth(periodDate)
-    const calStart = startOfWeek(periodDate, { weekStartsOn: 1 })
-    const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 })
-    return eachDayOfInterval({ start: calStart, end: calEnd })
-  }, [periodStart, viewMode])
+    return eachDayOfInterval({ start: calendarWeekDate(range.first), end: addDays(calendarWeekDate(range.end), -1) })
+  }, [range.first, range.end])
 
   const weeks = useMemo(() => {
     const result: Date[][] = []
@@ -149,12 +142,24 @@ export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = '
 
   return (
     <div
-      className={`month-grid ${compact ? 'flex flex-col h-full' : 'flex flex-col h-full p-3'}`}
+      ref={rootRef}
+      className={`month-grid flex flex-col h-full min-h-0 ${compact ? '' : 'p-3'}`}
+      style={{ ['--calendar-week-height' as string]: '100px' }}
       role="grid"
+      aria-rowcount={CALENDAR_WEEK_COUNT + 1}
+      aria-colcount={7}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget || !['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) return
+        event.preventDefault()
+        const viewport = viewportRef.current!
+        const height = Number.parseFloat(event.currentTarget.style.getPropertyValue('--calendar-week-height'))
+        useCalendarStore.getState().navigateToDate(calendarWeekDate(Math.ceil(viewport.scrollTop / height)), 'nearest', true)
+      }}
       aria-label={viewMode === 'week' ? '周日历' : '月日历'}
     >
       {/* Day headers */}
-      <div className="grid grid-cols-7 shrink-0 mb-0.5" role="row">
+      <div className="calendar-weekdays grid grid-cols-7 shrink-0 mb-0.5" role="row" aria-rowindex={1}>
         {weekdayLabels.map((d, i) => (
           <div
             key={d}
@@ -172,35 +177,40 @@ export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = '
 
       {/* Calendar grid - fills remaining height */}
       <div
-        className="month-grid-body grid grid-cols-7 flex-1 auto-rows-fr overflow-hidden rounded-md border"
-        style={{ borderColor: cellBorderColor || 'rgba(255,255,255,0.15)' }}
+        ref={viewportRef}
+        className="month-grid-body relative flex-1 min-h-0 rounded-md border"
+        style={{ borderColor: cellBorderColor || 'rgba(255,255,255,0.15)', overflowY: blocked || menuOpen ? 'hidden' : 'auto' }}
         role="rowgroup"
       >
+        <div ref={spaceRef} className="calendar-week-space relative" style={{ height: `calc(var(--calendar-week-height) * ${CALENDAR_WEEK_COUNT})` }}>
         {weekCells.map((week, wi) => {
           return (
-            <div key={wi} role="row" className="contents">
+            <div key={week[0].dateStr} role="row" data-week-index={range.first + wi} aria-rowindex={range.first + wi + 2} className="calendar-week-row absolute inset-x-0 grid grid-cols-7"
+              style={{ top: `calc(var(--calendar-week-height) * ${calendarWeekIndex(week[0].day)})`, height: 'var(--calendar-week-height)' }}>
               {week.map((cell, di) => {
                 const { day, dateStr } = cell
                 return (
                   <DayCell
                     completedKeys={completedKeys}
                     todayKey={todayKey}
-                    key={`${wi}-${di}`}
+                    key={dateStr}
                     day={day}
                     dateStr={dateStr}
                     events={cell.events}
                     dailyTodos={dailyTodoSummary.itemsByDate.get(dateStr) || EMPTY_TODOS}
                     dailyTodoCount={dailyTodoSummary.counts.get(dateStr) || 0}
-                    isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, currentDate)}
+                    isCurrentMonth={viewMode === 'week' ? true : isSameMonth(day, browseDate)}
                     isToday={dateStr === todayKey}
                     compact={compact}
                     cellBorderColor={cellBorderColor}
                     holiday={getHoliday(dateStr)}
                     adjustedWorkday={getAdjustedWorkday(dateStr)}
-                    showHolidayLabel={viewMode === 'week' && wi === 0 && di === 0}
+                    showHolidayLabel={viewMode === 'week' && di === 0}
                     holidayStripeColor={holidayStripeColor}
                     holidayTextColor={holidayTextColor}
                     eventTextColor={eventTextColor}
+                    scrollPositions={scrollPositions.current}
+                    onMenuOpenChange={setMenuOpen}
                     onClick={cell.onClick}
                     onDoubleClick={cell.onDoubleClick}
                     onRightClick={cell.onRightClick}
@@ -210,6 +220,7 @@ export const MonthGrid = memo(function MonthGrid({ compact = false, viewMode = '
             </div>
           )
         })}
+        </div>
       </div>
     </div>
   )

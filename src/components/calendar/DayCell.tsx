@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CalendarEvent } from '@/types/calendar.types'
 import { useCalendarStore } from '@/stores/calendar.store'
@@ -8,6 +8,7 @@ import { openTodoSource } from '@/lib/todo-navigation'
 import { isHolidayLabelDay } from '@/lib/holidays'
 import { format, isSameDay } from 'date-fns'
 import { CalendarPlus, CalendarRange, ListTodo } from '@/components/ui/icons'
+import { calendarKeyboardDate } from '@/lib/calendar-viewport'
 
 const CONTEXT_MENU_WIDTH = 224
 const CONTEXT_MENU_HEIGHT = 150
@@ -49,12 +50,14 @@ interface DayCellProps {
   holidayStripeColor?: string
   holidayTextColor?: string
   eventTextColor?: string
+  scrollPositions?: Map<string, number>
+  onMenuOpenChange?: (open: boolean) => void
   onClick: () => void
   onDoubleClick: () => void
   onRightClick: (e: React.MouseEvent) => void
 }
 
-export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, adjustedWorkday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, onClick, onDoubleClick, onRightClick, dateStr, completedKeys, todayKey = format(new Date(), 'yyyy-MM-dd') }: DayCellProps) {
+export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dailyTodoCount = 0, isCurrentMonth, isToday, compact = false, cellBorderColor, holiday, adjustedWorkday, showHolidayLabel = false, holidayStripeColor, holidayTextColor, eventTextColor, scrollPositions, onMenuOpenChange, onClick, onDoubleClick, onRightClick, dateStr, completedKeys, todayKey = format(new Date(), 'yyyy-MM-dd') }: DayCellProps) {
   const isSelected = useCalendarStore((s) => isSameDay(day, s.currentDate))
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const openEventForm = useCalendarStore((s) => s.openEventForm)
@@ -64,27 +67,35 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
   const eventListRef = useRef<HTMLDivElement>(null)
   const isSupportedDate = isDateKey(dateStr)
 
-  useEffect(() => {
-    if (!isSelected) return
-    const cell = cellRef.current
-    const viewport = cell?.closest('.calendar-grid-scroll')
-    if (!cell || !viewport) return
-    let frame = 0
-    const revealSelection = () => {
-      window.cancelAnimationFrame(frame)
-      frame = window.requestAnimationFrame(() => {
-        cell.firstElementChild?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-      })
+  useLayoutEffect(() => {
+    const list = eventListRef.current!
+    list.scrollTop = scrollPositions?.get(dateStr) || 0
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || !event.deltaY) return
+      if (list.scrollHeight <= list.clientHeight + 1) return
+      event.stopPropagation()
+      if ((event.deltaY < 0 && list.scrollTop <= 0)
+        || (event.deltaY > 0 && list.scrollTop >= list.scrollHeight - list.clientHeight - 1)) event.preventDefault()
     }
-    revealSelection()
-    const observer = new ResizeObserver(revealSelection)
-    observer.observe(viewport)
-    observer.observe(cell)
+    const remember = () => {
+      if (!scrollPositions) return
+      scrollPositions.delete(dateStr)
+      scrollPositions.set(dateStr, list.scrollTop)
+      if (scrollPositions.size > 100) scrollPositions.delete(scrollPositions.keys().next().value!)
+    }
+    list.addEventListener('wheel', wheel, { passive: false })
+    list.addEventListener('scroll', remember, { passive: true })
     return () => {
-      window.cancelAnimationFrame(frame)
-      observer.disconnect()
+      list.removeEventListener('wheel', wheel)
+      list.removeEventListener('scroll', remember)
     }
-  }, [isSelected, dateStr])
+  }, [dateStr, scrollPositions])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    onMenuOpenChange?.(true)
+    return () => onMenuOpenChange?.(false)
+  }, [contextMenu, onMenuOpenChange])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -126,17 +137,6 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
       padding: compact ? '1px 3px' : '1px 5px',
       textShadow: 'none',
     }
-  }
-
-  const handleCellWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const list = eventListRef.current
-    if (!list || event.deltaY === 0 || list.scrollHeight <= list.clientHeight) return
-    const maxScrollTop = list.scrollHeight - list.clientHeight
-    const nextScrollTop = Math.min(maxScrollTop, Math.max(0, list.scrollTop + event.deltaY))
-    if (nextScrollTop === list.scrollTop) return
-    event.preventDefault()
-    event.stopPropagation()
-    list.scrollTop = nextScrollTop
   }
 
   const openContextMenuAt = (clientX: number, clientY: number) => {
@@ -246,29 +246,13 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
         ref={cellRef}
         onClick={isSupportedDate ? onClick : undefined}
         onDoubleClick={isSupportedDate ? onDoubleClick : undefined}
-        onWheel={handleCellWheel}
         onContextMenu={handleContextMenu}
         onKeyDown={(event) => {
           if (!isSupportedDate) return
           if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
             event.preventDefault()
-            const cells = [...document.querySelectorAll<HTMLElement>('[role="gridcell"]')]
-            const currentIndex = cells.indexOf(event.currentTarget)
-            const rowStart = Math.floor(currentIndex / 7) * 7
-            const targetIndex = event.key === 'ArrowLeft' ? currentIndex - 1
-              : event.key === 'ArrowRight' ? currentIndex + 1
-                : event.key === 'ArrowUp' ? currentIndex - 7
-                  : event.key === 'ArrowDown' ? currentIndex + 7
-                    : event.key === 'Home'
-                      ? cells.findIndex((cell, index) => index >= rowStart && index < rowStart + 7 && cell.getAttribute('aria-disabled') !== 'true')
-                      : cells.reduce((last, cell, index) => (
-                          index >= rowStart && index < rowStart + 7 && cell.getAttribute('aria-disabled') !== 'true' ? index : last
-                        ), -1)
-            const target = targetIndex >= 0 ? cells[targetIndex] : null
-            if (target && target.getAttribute('aria-disabled') !== 'true') {
-              target.focus()
-              target.click()
-            }
+            const target = calendarKeyboardDate(day, event.key)
+            if (target) useCalendarStore.getState().navigateToDate(target, 'nearest', true)
           } else if (event.key === 'Enter') {
             event.preventDefault()
             onClick()
@@ -284,6 +268,8 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
           }
         }}
         role="gridcell"
+        data-date={dateStr}
+        data-outside-month={!isCurrentMonth || undefined}
         tabIndex={isSupportedDate && isSelected ? 0 : -1}
         aria-selected={isSupportedDate ? isSelected : undefined}
         aria-disabled={!isSupportedDate || undefined}
@@ -296,7 +282,6 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
           isToday && 'bg-primary/6 border-primary/25',
           isSelected && !isToday && 'ring-1 ring-inset ring-primary/40 bg-primary/4',
           isSelected && isToday && 'ring-1 ring-inset ring-primary/40',
-          !isCurrentMonth && isSupportedDate && 'opacity-[0.58]',
           compact ? 'p-0.5 gap-px' : 'p-1.5 min-h-[80px] gap-0.5',
         )}
         style={{
@@ -315,13 +300,17 @@ export const DayCell = memo(function DayCell({ day, events, dailyTodos = [], dai
               isToday && 'bg-primary text-primary-foreground',
               isSelected && !isToday && 'bg-primary/25 text-primary',
               !isToday && !isSelected && isCurrentMonth && 'opacity-60',
+              !isToday && !isSelected && !isCurrentMonth && 'opacity-50',
               compact ? 'w-6 h-6' : 'w-7 h-7',
             )}
           >
             {day.getDate()}
           </span>
-          {((holiday && (showHolidayLabel || isHolidayLabelDay(dateStr))) || adjustedWorkday) && (
+          {(day.getDate() === 1 || (holiday && (showHolidayLabel || isHolidayLabelDay(dateStr))) || adjustedWorkday) && (
             <div className="calendar-day-meta flex min-w-0 items-center gap-1">
+              {day.getDate() === 1 && <span className="calendar-month-marker text-[0.68em] font-semibold" title={format(day, 'yyyy年M月')}>
+                {format(day, day.getMonth() === 0 ? 'yyyy年M月' : 'M月')}
+              </span>}
               {holiday && (showHolidayLabel || isHolidayLabelDay(dateStr)) && (
                 <span
                   className={cn(

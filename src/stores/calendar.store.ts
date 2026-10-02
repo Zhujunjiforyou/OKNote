@@ -6,6 +6,9 @@ import { reportPersistenceIssue } from '@/stores/persistence.store'
 
 interface CalendarStore {
   currentDate: Date
+  browseDate: Date
+  followToday: boolean
+  navigation: CalendarNavigation | null
   events: CalendarEvent[]
   eventsRevision: number
   selectedEventId: string | null
@@ -16,6 +19,8 @@ interface CalendarStore {
   viewNoteTagFilter: string[]
 
   setCurrentDate: (date: Date) => void
+  setBrowseDate: (date: Date, userInitiated?: boolean) => void
+  navigateToDate: (date: Date, align?: CalendarNavigation['align'], focus?: boolean) => void
   goPrevMonth: () => void
   goNextMonth: () => void
   goToday: () => void
@@ -49,6 +54,12 @@ function clampSupportedDate(value: Date): Date {
   return date
 }
 
+export interface CalendarNavigation {
+  date: Date
+  align: 'period' | 'nearest'
+  focus: boolean
+}
+
 function overlayPendingEvents(events: CalendarEvent[]): CalendarEvent[] {
   const byId = new Map(events.map((event) => [event.id, event]))
   for (const mutation of pendingEventMutations.values()) {
@@ -58,17 +69,27 @@ function overlayPendingEvents(events: CalendarEvent[]): CalendarEvent[] {
   return [...byId.values()]
 }
 
+function eventSnapshotState(events: CalendarEvent[], state: CalendarStore) {
+  const selectedEventId = state.selectedEventId && events.some((event) => event.id === state.selectedEventId)
+    ? state.selectedEventId : null
+  return {
+    events,
+    selectedEventId,
+    selectedEventOccurrenceDate: selectedEventId ? state.selectedEventOccurrenceDate : null,
+  }
+}
+
 function applyServerEvents(rawEvents: unknown[], revision = 0) {
   const state = useCalendarStore.getState()
   if (revision < state.eventsRevision) {
-    useCalendarStore.setState({ events: overlayPendingEvents(serverEvents) })
+    useCalendarStore.setState((s) => eventSnapshotState(overlayPendingEvents(serverEvents), s))
     return
   }
   serverEvents = normalizeCalendarEvents(rawEvents)
-  useCalendarStore.setState({
-    events: overlayPendingEvents(serverEvents),
+  useCalendarStore.setState((s) => ({
+    ...eventSnapshotState(overlayPendingEvents(serverEvents), s),
     eventsRevision: revision,
-  })
+  }))
 }
 
 async function persistEventMutation(
@@ -114,6 +135,9 @@ async function persistEventMutation(
 
 export const useCalendarStore = create<CalendarStore>((set, get) => ({
   currentDate: new Date(),
+  browseDate: new Date(),
+  followToday: true,
+  navigation: null,
   events: [],
   eventsRevision: 0,
   selectedEventId: null,
@@ -123,20 +147,33 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   multiDayMode: false,
   viewNoteTagFilter: [],
 
-  setCurrentDate: (date) => set({ currentDate: clampSupportedDate(date) }),
-  goPrevMonth: () => set((s) => {
-    const d = new Date(s.currentDate)
+  setCurrentDate: (date) => set({ currentDate: clampSupportedDate(date), followToday: false }),
+  setBrowseDate: (date, userInitiated = true) => set((s) => {
+    const next = clampSupportedDate(date)
+    const followToday = userInitiated ? false : s.followToday
+    return next.getTime() === s.browseDate.getTime() && followToday === s.followToday
+      ? s : { browseDate: next, followToday }
+  }),
+  navigateToDate: (date, align = 'period', focus = false) => {
+    const next = clampSupportedDate(date)
+    set({ currentDate: next, browseDate: next, followToday: false, navigation: { date: next, align, focus } })
+  },
+  goPrevMonth: () => {
+    const d = new Date(get().browseDate)
     d.setDate(1)
     d.setMonth(d.getMonth() - 1)
-    return { currentDate: clampSupportedDate(d) }
-  }),
-  goNextMonth: () => set((s) => {
-    const d = new Date(s.currentDate)
+    get().navigateToDate(d)
+  },
+  goNextMonth: () => {
+    const d = new Date(get().browseDate)
     d.setDate(1)
     d.setMonth(d.getMonth() + 1)
-    return { currentDate: clampSupportedDate(d) }
-  }),
-  goToday: () => set({ currentDate: clampSupportedDate(new Date()) }),
+    get().navigateToDate(d)
+  },
+  goToday: () => {
+    get().navigateToDate(new Date())
+    set({ followToday: true })
+  },
   selectEvent: (id, occurrenceDate = null) => set({
     selectedEventId: id,
     selectedEventOccurrenceDate: id ? occurrenceDate : null,
@@ -148,12 +185,12 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   addEvent: (event) => {
     if (!window.electronAPI?.isElectron) {
       const events = [...get().events.filter((item) => item.id !== event.id), event]
-      set({ events })
+      set((s) => eventSnapshotState(events, s))
       return Promise.resolve({ ok: true, event, events, revision: get().eventsRevision })
     }
     const token = Symbol(event.id)
     pendingEventMutations.set(event.id, { token, type: 'upsert', event })
-    set({ events: overlayPendingEvents(serverEvents) })
+    set((s) => eventSnapshotState(overlayPendingEvents(serverEvents), s))
     const retry = () => { void get().addEvent(event) }
     return persistEventMutation(event.id, token, {
       type: 'create',
@@ -164,13 +201,13 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   updateEvent: (event) => {
     if (!window.electronAPI?.isElectron) {
       const events = get().events.map((item) => item.id === event.id ? event : item)
-      set({ events })
+      set((s) => eventSnapshotState(events, s))
       return Promise.resolve({ ok: true, event, events, revision: get().eventsRevision })
     }
     const previous = get().events.find((item) => item.id === event.id)
     const token = Symbol(event.id)
     pendingEventMutations.set(event.id, { token, type: 'upsert', event })
-    set({ events: overlayPendingEvents(serverEvents) })
+    set((s) => eventSnapshotState(overlayPendingEvents(serverEvents), s))
     const retry = () => { void get().updateEvent(event) }
     return persistEventMutation(event.id, token, {
       type: 'update',
@@ -181,21 +218,13 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   },
   deleteEvent: (id) => {
     if (!window.electronAPI?.isElectron) {
-      set((s) => ({
-        events: s.events.filter((event) => event.id !== id),
-        selectedEventId: s.selectedEventId === id ? null : s.selectedEventId,
-        selectedEventOccurrenceDate: s.selectedEventId === id ? null : s.selectedEventOccurrenceDate,
-      }))
+      set((s) => eventSnapshotState(s.events.filter((event) => event.id !== id), s))
       return
     }
     const previous = get().events.find((event) => event.id === id)
     const token = Symbol(id)
     pendingEventMutations.set(id, { token, type: 'delete', id })
-    set((s) => ({
-      events: overlayPendingEvents(serverEvents),
-      selectedEventId: s.selectedEventId === id ? null : s.selectedEventId,
-      selectedEventOccurrenceDate: s.selectedEventId === id ? null : s.selectedEventOccurrenceDate,
-    }))
+    set((s) => eventSnapshotState(overlayPendingEvents(serverEvents), s))
     const retry = () => get().deleteEvent(id)
     void persistEventMutation(id, token, {
       type: 'delete',

@@ -114,8 +114,8 @@ function getAdaptiveTextShadow(textColor: string, opacity: number): string {
 }
 
 export function CalendarWindow() {
-  const currentDate = useCalendarStore((s) => s.currentDate)
-  const setCurrentDate = useCalendarStore((s) => s.setCurrentDate)
+  const browseDate = useCalendarStore((s) => s.browseDate)
+  const hasEventDetail = useCalendarStore((s) => !!s.selectedEventId && s.events.some((event) => event.id === s.selectedEventId))
   const goPrevMonth = useCalendarStore((s) => s.goPrevMonth)
   const goNextMonth = useCalendarStore((s) => s.goNextMonth)
   const goToday = useCalendarStore((s) => s.goToday)
@@ -124,8 +124,8 @@ export function CalendarWindow() {
   const isEventFormOpen = useCalendarStore((s) => s.isEventFormOpen)
   const multiDayMode = useCalendarStore((s) => s.multiDayMode)
   const setMultiDayMode = useCalendarStore((s) => s.setMultiDayMode)
-  const year = currentDate.getFullYear()
-  const month = currentDate.getMonth() + 1
+  const year = browseDate.getFullYear()
+  const month = browseDate.getMonth() + 1
 
   const { settings, themeMode } = useAppSettings('calendar')
   const [isDayEventsOpen, setIsDayEventsOpen] = useState(false)
@@ -174,12 +174,8 @@ export function CalendarWindow() {
     const previousToday = previousTodayKeyRef.current
     previousTodayKeyRef.current = todayKey
     if (previousToday === todayKey) return
-    const [previousYear, previousMonth] = previousToday.split('-').map(Number)
-    if (currentDate.getFullYear() === previousYear && currentDate.getMonth() + 1 === previousMonth) {
-      const [nextYear, nextMonth, nextDay] = todayKey.split('-').map(Number)
-      setCurrentDate(new Date(nextYear, nextMonth - 1, nextDay))
-    }
-  }, [currentDate, setCurrentDate, todayKey])
+    if (useCalendarStore.getState().followToday) goToday()
+  }, [goToday, todayKey])
 
   const viewportDensity = getCalendarDensity(viewportSize.width, viewportSize.height)
   const requestedFontSize = clampFontSize(settings.fontSize)
@@ -187,7 +183,6 @@ export function CalendarWindow() {
   // Font size must remain continuous while the surrounding geometry stays stable.
   const calendarDensity = viewportDensity
   const effectiveFontSize = getAdaptiveDisplayFontSize(requestedFontSize)
-  const calendarGridMinHeight = Math.max(360, Math.ceil(effectiveFontSize * 13.2))
   // Keep the date and its count readable together; a narrow viewport can scroll.
   const calendarGridMinWidth = Math.max(420, Math.ceil(effectiveFontSize * 21))
   const isCompactDensity = calendarDensity < 0.92
@@ -566,8 +561,8 @@ export function CalendarWindow() {
     return () => { cancelled = true }
   }, [])
 
-  const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
-  const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
+  const weekStart = startOfWeek(browseDate, { weekStartsOn: 1 })
+  const weekEnd = endOfWeek(browseDate, { weekStartsOn: 1 })
   const fullTitleText = effectiveViewMode === 'week'
     ? `${format(weekStart, 'M月d日')} - ${format(weekEnd, 'M月d日')}`
     : `${year}年${month}月`
@@ -594,7 +589,7 @@ export function CalendarWindow() {
     : 'rgba(255, 140, 140, 0.85)'
   const eventTextColor = calendarTextColor
   const canNavigate = (direction: -1 | 1) => {
-    const target = new Date(currentDate)
+    const target = new Date(browseDate)
     if (effectiveViewMode === 'month') {
       target.setDate(1)
       target.setMonth(target.getMonth() + direction)
@@ -614,9 +609,9 @@ export function CalendarWindow() {
       goPrevMonth()
       return
     }
-    const next = new Date(currentDate)
+    const next = new Date(browseDate)
     next.setDate(next.getDate() - 7)
-    useCalendarStore.getState().setCurrentDate(next)
+    useCalendarStore.getState().navigateToDate(next)
   }
   const handleNext = () => {
     if (!canGoNext) return
@@ -624,19 +619,19 @@ export function CalendarWindow() {
       goNextMonth()
       return
     }
-    const next = new Date(currentDate)
+    const next = new Date(browseDate)
     next.setDate(next.getDate() + 7)
-    useCalendarStore.getState().setCurrentDate(next)
+    useCalendarStore.getState().navigateToDate(next)
   }
   const readPickerYear = () => {
     const value = Number.parseInt(pickerYearInput, 10)
     return Number.isFinite(value) && value >= MIN_SUPPORTED_YEAR && value <= MAX_SUPPORTED_YEAR ? value : null
   }
   const goToPickerYear = (nextYear: number, closePicker = false) => {
-    const next = new Date(currentDate)
+    const next = new Date(browseDate)
     next.setDate(1)
     next.setFullYear(nextYear)
-    useCalendarStore.getState().setCurrentDate(next)
+    useCalendarStore.getState().navigateToDate(next)
     setPickerYearInput(String(nextYear))
     setPickerYearError('')
     if (closePicker) setShowPicker(false)
@@ -655,11 +650,11 @@ export function CalendarWindow() {
       setPickerYearError(`请输入 ${MIN_SUPPORTED_YEAR}–${MAX_SUPPORTED_YEAR} 之间的四位年份`)
       return
     }
-    const next = new Date(currentDate)
+    const next = new Date(browseDate)
     next.setDate(1)
     next.setFullYear(nextYear)
     next.setMonth(nextMonth - 1)
-    useCalendarStore.getState().setCurrentDate(next)
+    useCalendarStore.getState().navigateToDate(next)
     setShowPicker(false)
   }
   const handleYearStripPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -783,8 +778,8 @@ export function CalendarWindow() {
         ['--calendar-density' as string]: calendarDensity,
         ['--calendar-font-size' as string]: `${effectiveFontSize}px`,
         ['--calendar-requested-font-size' as string]: requestedFontSize,
-        ['--calendar-grid-min-height' as string]: `${calendarGridMinHeight}px`,
         ['--calendar-grid-min-width' as string]: `${calendarGridMinWidth}px`,
+        ['--calendar-outside-bg' as string]: lightBg ? 'rgba(100, 110, 124, 0.13)' : 'rgba(148, 156, 168, 0.12)',
       }}
     >
       {/* Background overlay */}
@@ -1203,7 +1198,8 @@ export function CalendarWindow() {
       {/* Content */}
       <div className="cal-main-content relative z-[30] flex-1 flex flex-col overflow-hidden px-3 pb-3">
         <div className="calendar-grid-scroll flex-1 overflow-hidden">
-          <MonthGrid compact viewMode={effectiveViewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} todayKey={todayKey} onDayDoubleClick={openDayEvents} />
+          <MonthGrid compact viewMode={effectiveViewMode} cellBorderColor={cellBorderColor} holidayStripeColor={holidayStripeColor} holidayTextColor={holidayTextColor} eventTextColor={eventTextColor} todayKey={todayKey} onDayDoubleClick={openDayEvents}
+            blocked={isEventFormOpen || isDayEventsOpen || hasEventDetail || showPicker || showNoteCreateMenu || showOverflowMenu || showReminderCenter} />
         </div>
       </div>
 

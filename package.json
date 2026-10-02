@@ -1,6 +1,6 @@
 {
   "name": "oknote",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Desktop calendar, sticky-note and reminder application for Windows and macOS.",
   "author": "zhujunjiforyou",
   "homepage": "https://github.com/Zhujunjiforyou/OKNote",
@@ -28,6 +28,8 @@
     "test:mac-windows": "node scripts/electron-macos-window-qa.cjs",
     "test:electron-performance": "node scripts/electron-performance-qa.cjs",
     "test:electron-compact": "node scripts/electron-compact-layout-qa.cjs",
+    "test:electron-calendar-scroll": "npm run build && node scripts/electron-calendar-scroll-qa.cjs",
+    "test:electron-calendar-regression": "node scripts/electron-calendar-regression-qa.cjs",
     "test:electron-tasks": "node scripts/electron-task-completion-qa.cjs",
     "test:electron-dock": "node scripts/electron-dock-restoration-qa.cjs",
     "test:electron-upgrade": "node scripts/electron-legacy-upgrade-qa.cjs",

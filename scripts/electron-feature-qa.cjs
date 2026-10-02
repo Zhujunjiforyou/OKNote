@@ -22,6 +22,8 @@ async function openDayDetails(client, date) {
   const [year, month, day] = date.split('-').map(Number);
   const selector = `[role="gridcell"][aria-label^="${year}年${month}月${day}日"] .calendar-day-number`;
   await client.call('Page.bringToFront');
+  await client.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'});`);
+  await delay(100);
   const point = await client.evaluate(`
     const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -109,7 +111,16 @@ async function testCalendarItemTypes(session) {
   assert.equal((await loadNote(cal, daily.id)).items[0].isCompleted, false, 'opening a preview must not complete it');
   for (const selector of ['.daily-calendar-chip', '[aria-label="打开待办：QA 类型待办 0"]']) {
     assert.equal((await api(cal, 'hideNoteById', daily.id)).ok, true);
-    await cal.evaluate(`document.querySelector(${JSON.stringify(selector)}).focus();`);
+    // Closing the note may still be transferring native focus. Activate the
+    // calendar before focusing its control so the keyboard targets one window.
+    await cal.call('Page.bringToFront');
+    await waitUntil(() => cal.evaluate('return document.hasFocus();'), 'calendar focus before Space');
+    assert.ok(await cal.evaluate(`
+      const target=document.querySelector(${JSON.stringify(selector)});
+      if (!target || target.closest('[inert]')) return false;
+      target.focus({preventScroll:true});
+      return target.isConnected && document.activeElement === target;
+    `), 'Space target is an active, non-buffer calendar control');
     await key(cal, ' ');
     await waitUntil(async () => !(await loadNote(cal, daily.id)).isHidden, 'Space opens the daily note');
     assert.equal((await loadNote(cal, daily.id)).dailyTodo.activeDate, today, 'source opens on the selected date');
@@ -174,13 +185,18 @@ async function testEvents(session) {
 
 async function testCalendarNavigation(session) {
   const cal = session.calendar;
+  await click(cal, '.cal-left-actions .cal-action-today');
   const title = await cal.evaluate('return document.querySelector(".cal-month-title").textContent;');
   await click(cal, label('下一个月'));
   assert.notEqual(await cal.evaluate('return document.querySelector(".cal-month-title").textContent;'), title);
   await click(cal, '.cal-left-actions .cal-action-today');
   assert.equal(await cal.evaluate('return document.querySelector(".cal-month-title").textContent;'), title);
   await click(cal, '[title="周视图"]');
-  assert.equal(await cal.evaluate('return document.querySelectorAll("[role=gridcell]").length;'), 7);
+  assert.ok(await cal.evaluate(`
+    const viewport = document.querySelector('.month-grid-body');
+    const rowHeight = parseFloat(document.querySelector('.month-grid').style.getPropertyValue('--calendar-week-height'));
+    return rowHeight >= viewport.clientHeight - 1 && document.querySelectorAll('[role=gridcell]').length <= 42;
+  `), 'week viewport shows one week with a bounded scroll buffer');
   await click(cal, label('上一周'));
   await click(cal, '.cal-left-actions .cal-action-today');
   await click(cal, '[title="月视图"]');
