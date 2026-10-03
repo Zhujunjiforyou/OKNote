@@ -9,8 +9,8 @@ OKNote 是一款桌面日历与便签应用，支持日程安排、待办清单�
 | 系统 | 版本 | 安装包 |
 | --- | --- | --- |
 | Windows 10 / 11（x64） | 2.3.1 | [下载 EXE](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.1/OKNote-2.3.1-win-x64.exe) |
-| macOS 13+（Apple 芯片） | 2.3.0 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-arm64.dmg) |
-| macOS 13+（Intel） | 2.3.0 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-x64.dmg) |
+| macOS 13+（Apple 芯片） | 2.3.1 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.1/OKNote-2.3.1-mac-arm64.dmg) |
+| macOS 13+（Intel） | 2.3.1 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.1/OKNote-2.3.1-mac-x64.dmg) |
 
 Windows 运行安装程序；Mac 打开 DMG 后将 OKNote 拖入“应用程序”。macOS 安装包使用临时签名，尚未经过 Apple 公证。
 
