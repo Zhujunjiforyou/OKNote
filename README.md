@@ -2,17 +2,15 @@
 
 OKNote 是一款桌面日历与便签应用，支持日程安排、待办清单和日常记录。半透明窗口可按喜好调整配色，便签既可独立摆放，也可挂载到日历下方集中浏览。
 
-当前源码版本：**2.3.1（未发布）** · Windows 10 / 11 · macOS 13+
+当前源码版本：**2.3.1** · Windows 10 / 11 · macOS 13+
 
 ## 下载与安装
 
-以下为已发布的 **2.3.0** 安装包。
-
-| 系统 | 安装包 |
-| --- | --- |
-| Windows 10 / 11（x64） | [下载 EXE](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-win-x64.exe) |
-| macOS 13+（Apple 芯片） | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-arm64.dmg) |
-| macOS 13+（Intel） | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-x64.dmg) |
+| 系统 | 版本 | 安装包 |
+| --- | --- | --- |
+| Windows 10 / 11（x64） | 2.3.1 | [下载 EXE](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.1/OKNote-2.3.1-win-x64.exe) |
+| macOS 13+（Apple 芯片） | 2.3.0 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-arm64.dmg) |
+| macOS 13+（Intel） | 2.3.0 | [下载 DMG](https://github.com/Zhujunjiforyou/OKNote/releases/download/v2.3.0/OKNote-2.3.0-mac-x64.dmg) |
 
 Windows 运行安装程序；Mac 打开 DMG 后将 OKNote 拖入“应用程序”。macOS 安装包使用临时签名，尚未经过 Apple 公证。
 
@@ -175,7 +173,8 @@ node --check electron/main.cjs
 
 | 操作 | 方式 |
 | --- | --- |
-| 切换月份 | 点击标题栏左右箭头 |
+| 浏览日期 | 在日期头部上下滚动，停滚后对齐完整周行 |
+| 切换月份 | 点击标题栏左右箭头，或连续滚动跨月 |
 | 快速跳转 | 点击标题栏中间的年月 |
 | 回到今天 | 点击「今天」 |
 | 新建事件 | 点击「+ 事件」，或在日期格右键选择 |
@@ -233,7 +232,7 @@ Windows 默认数据目录为 `%APPDATA%\oknote`，macOS 为 `~/Library/Applicat
 
 ## 更新日志
 
-### V2.3.1 - 未发布
+### V2.3.1 - 2026-10-03
 
 - 日历支持按周连续上下滚动，普通滚轮使用可衔接、可反向打断的缓动，停滚后对齐最近的完整周行。
 - 根据日期格与视口的实际交集面积切换浏览月份，横向裁剪和横向滚动也同步更新；加入切换缓冲，标题与相邻月份底色同步变化，滚动保持选中日期和当日回显。
